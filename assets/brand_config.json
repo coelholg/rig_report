@@ -1,0 +1,38 @@
+{
+    "colors": {
+        "primary": "#006161",
+        "secondary": "#38F07D",
+        "accent": "#0080AB",
+        "danger": "#EA4335",
+        "neutral": "#BBBABA",
+        "light": "#F1F3F4",
+        "dark": "#242E3D"
+    },
+    "company_information": {
+        "company_name": "Re:Cycle Reverse Logistics",
+        "report_title_prefix": "Annapurnas Wrong Disposition Analysis"
+    },
+    "assets": {
+        "assets_dir": "assets",
+        "logo_path": "assets/logo.png"
+    },
+    "fonts": {
+        "primary_font": "Poppins",
+        "secondary_font": "Poppins"
+    },
+    "styling": {
+        "header_bg_color": "#006161",
+        "header_text_color": "#FFFFFF",
+        "table_header_bg": "#006161",
+        "table_header_text": "#FFFFFF",
+        "table_stripe_color": "#F8F9FA"
+    },
+    "css_elements": {
+        "body_font": "Poppins, serif",
+        "body_color": "#242E3D",
+        "heading_color": "#006161",
+        "heading_border_color": "#006161",
+        "metrics_box_bg": "#F1F3F4",
+        "footer_bg": "#F1F3F4"
+    }
+}

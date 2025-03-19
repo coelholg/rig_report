@@ -1,0 +1,16 @@
+{
+  "filters": [
+    {
+      "column": "result",
+      "condition": "contains",
+      "value": "SUCCESS_RATE",
+      "action": "ignore_row"
+    },
+    {
+      "column": "slot",
+      "condition": "greater_than",
+      "value": "10",
+      "action": "ignore_row"
+    }
+  ]
+}
