@@ -146,6 +146,19 @@ def main():
                 if pattern:
                     # Drop rows where the "result" column contains the pattern
                     df = df[~df["result"].str.contains(pattern, case=False, na=False)]
+            elif rule.get("column") == "slot" and rule.get("condition") == "greater_than":
+                try:
+                    threshold = float(rule.get("value", "0"))
+                    df = df[df["slot"].str.extract(r'(\d+)', expand=False).fillna("0").astype(float) <= threshold]
+                except Exception as e:
+                    st.warning("Error applying slot filter rule: " + str(e))
+            elif (rule.get("column") == "result" and 
+                  rule.get("condition") == "equals" and 
+                  rule.get("action") == "replace"):
+                old_val = rule.get("value", "")
+                new_val = rule.get("new_value", "")
+                if old_val and new_val:
+                    df["result"] = df["result"].replace(old_val, new_val)
     except Exception as e:
         st.warning("Could not apply filter rules: " + str(e))
     
@@ -164,22 +177,19 @@ def main():
         # Filters
         st.header("Filters")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Update column layout to three columns (station, result multi-select, date range)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             station_options = ["All Stations"] + sorted(df['stationName'].unique().tolist())
             selected_station = st.selectbox("Station Name:", station_options)
             
         with col2:
-            # Populate result options dynamically from the data
-            result_options = ["All Results"] + sorted(df['result'].dropna().astype(str).unique().tolist())
-            selected_result = st.selectbox("Result:", result_options)
+            # Use multiselect for Results; default set to include all options
+            result_options = sorted(df['result'].dropna().astype(str).unique().tolist())
+            selected_results = st.multiselect("Result:", result_options, default=result_options)
             
         with col3:
-            slot_options = ["All Slots"] + sorted(df['slot'].dropna().astype(str).unique().tolist())
-            selected_slot = st.selectbox("Slot:", slot_options)
-            
-        with col4:
             try:
                 dates = pd.to_datetime(df['testDate'])
                 min_date = dates.min().date()
@@ -203,17 +213,15 @@ def main():
         if selected_station != "All Stations":
             filtered_df = filtered_df[filtered_df['stationName'] == selected_station]
             
-        # Updated result filtering using exact match from dynamic options
-        if selected_result != "All Results":
-            filtered_df = filtered_df[filtered_df['result'] == selected_result]
+        # Apply multi-select result filter; if any selection is made, filter rows where result is in the selection
+        if selected_results and set(selected_results) != set(result_options):
+            filtered_df = filtered_df[filtered_df['result'].isin(selected_results)]
         
-        if selected_slot != "All Slots":
-            filtered_df = filtered_df[filtered_df['slot'] == selected_slot]
-            
-        # Replace single date filtering with a range-based filter
+        # Remove slot filtering entirely
+        
+        # Range based date filtering remains unchanged
         if selected_date_range and isinstance(selected_date_range, list) and len(selected_date_range) == 2:
             start_date, end_date = selected_date_range
-            # Filter rows where testDate, converted to datetime.date, is between start_date and end_date
             filtered_df = filtered_df[pd.to_datetime(filtered_df['testDate']).dt.date.between(start_date, end_date)]
             
         # Summary metrics

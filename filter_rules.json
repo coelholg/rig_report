@@ -11,6 +11,13 @@
       "condition": "greater_than",
       "value": "10",
       "action": "ignore_row"
+    },
+    {
+      "column": "result",
+      "condition": "equals",
+      "value": "PASS",
+      "action": "replace",
+      "new_value": "PASSED"
     }
   ]
 }
