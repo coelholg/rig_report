@@ -4,6 +4,7 @@ import os
 import plotly.express as px
 from datetime import datetime
 import matplotlib.pyplot as plt
+import base64
 
 # Set page configuration
 st.set_page_config(
@@ -88,6 +89,7 @@ def create_station_chart(df):
         value_name='Count'
     )
     
+    # Use brand colors for the chart
     fig = px.bar(
         station_results_melted, 
         x='stationName', 
@@ -95,16 +97,198 @@ def create_station_chart(df):
         color='Status',
         barmode='group',
         title='Test Results by Station',
-        color_discrete_map={'Passed': 'green', 'Failed': 'red'},
+        color_discrete_map={
+            'Passed': brand_config.get('colors', {}).get('secondary', 'green'), 
+            'Failed': brand_config.get('colors', {}).get('danger', 'red')
+        },
         labels={'stationName': 'Station Name', 'Count': 'Number of Tests'}
+    )
+    
+    # Update overall chart styling
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        title_font_color=brand_config.get('css_elements', {}).get('heading_color', '#000'),
+        font_family=brand_config.get('fonts', {}).get('primary_font', 'sans-serif')
     )
     
     return fig
 
+def load_brand_config():
+    import json
+    config_path = os.path.join(os.path.dirname(__file__), "assets", "brand_config.json")
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        st.warning(f"Could not load brand config: {e}")
+        return {}
+
+def get_image_as_base64(image_path):
+    """Convert an image to base64 for embedding in HTML/CSS"""
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode('utf-8')
+    except Exception as e:
+        st.warning(f"Error loading image {image_path}: {e}")
+        return ""
+
+# Load brand configuration
+brand_config = load_brand_config()
+
+# Create comprehensive CSS based on brand config
+if brand_config:
+    # Try to load the logo for header
+    logo_path = os.path.join(os.path.dirname(__file__), brand_config.get("assets", {}).get("logo_path", ""))
+    logo_base64 = get_image_as_base64(logo_path) if os.path.exists(logo_path) else ""
+    
+    primary_color = brand_config.get("colors", {}).get("primary", "#000")
+    secondary_color = brand_config.get("colors", {}).get("secondary", "#000")
+    accent_color = brand_config.get("colors", {}).get("accent", "#000")
+    danger_color = brand_config.get("colors", {}).get("danger", "#000")
+    neutral_color = brand_config.get("colors", {}).get("neutral", "#000")
+    light_color = brand_config.get("colors", {}).get("light", "#000")
+    dark_color = brand_config.get("colors", {}).get("dark", "#000")
+    
+    primary_font = brand_config.get("fonts", {}).get("primary_font", "sans-serif")
+    
+    css = f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family={primary_font.replace(' ', '+')}:wght@300;400;500;600;700&display=swap');
+    
+    /* Base elements */
+    body, .stApp {{
+        font-family: '{primary_font}', sans-serif !important;
+        color: {brand_config.get("css_elements", {}).get("body_color", "#000")};
+    }}
+    
+    h1, h2, h3, h4, h5, h6 {{
+        color: {brand_config.get("css_elements", {}).get("heading_color", "#000")} !important;
+        font-family: '{primary_font}', sans-serif !important;
+        font-weight: 600;
+    }}
+    
+    /* Header styling */
+    .app-header {{
+        background-color: {brand_config.get("styling", {}).get("header_bg_color", "#000")};
+        color: {brand_config.get("styling", {}).get("header_text_color", "#FFF")};
+        padding: 1.5rem;
+        border-radius: 5px;
+        margin-bottom: 2rem;
+        display: flex;
+        align-items: center;
+    }}
+    
+    .app-header-content {{
+        margin-left: 20px;
+    }}
+    
+    .app-header img {{
+        height: 60px;
+    }}
+    
+    /* Button styling */
+    .stButton>button {{
+        background-color: {primary_color} !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 4px !important;
+        padding: 0.5rem 1rem !important;
+        transition: all 0.3s ease !important;
+    }}
+    
+    .stButton>button:hover {{
+        background-color: {accent_color} !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+    }}
+    
+    /* Metrics styling */
+    .metrics-container {{
+        background-color: {brand_config.get("css_elements", {}).get("metrics_box_bg", "#F1F3F4")};
+        border-radius: 5px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }}
+    
+    .metrics-container .stMetric {{
+        background-color: white;
+        border-radius: 4px;
+        padding: 1rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+    }}
+    
+    .metrics-container [data-testid="stMetricValue"] {{
+        color: {primary_color} !important;
+        font-weight: bold !important;
+        font-size: 1.8rem !important;
+    }}
+    
+    /* Table styling */
+    .dataframe {{
+        font-family: '{primary_font}', sans-serif !important;
+    }}
+    
+    [data-testid="stTable"] th {{
+        background-color: {brand_config.get("styling", {}).get("table_header_bg", "#006161")} !important;
+        color: {brand_config.get("styling", {}).get("table_header_text", "#FFFFFF")} !important;
+        font-weight: 500 !important;
+    }}
+    
+    [data-testid="stTable"] tr:nth-of-type(even) {{
+        background-color: {brand_config.get("styling", {}).get("table_stripe_color", "#F8F9FA")};
+    }}
+    
+    /* Footer styling */
+    .app-footer {{
+        background-color: {brand_config.get("css_elements", {}).get("footer_bg", "#F1F3F4")};
+        padding: 1rem;
+        text-align: center;
+        border-radius: 5px;
+        margin-top: 2rem;
+        font-size: 0.8rem;
+        color: {dark_color};
+    }}
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {{
+        background-color: {light_color} !important;
+    }}
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {{
+        background-color: {light_color};
+        color: {dark_color} !important;
+        font-family: '{primary_font}', sans-serif !important;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
 # Main app function
 def main():
-    # Header
-    st.title("Test Station Maintenance Control")
+    # Custom header with logo if available
+    if brand_config:
+        company_name = brand_config.get("company_information", {}).get("company_name", "Test Station Maintenance Control")
+        logo_path = os.path.join(os.path.dirname(__file__), brand_config.get("assets", {}).get("logo_path", ""))
+        
+        header_html = f"""
+        <div class="app-header">
+        """
+        
+        if os.path.exists(logo_path):
+            header_html += f'<img src="data:image/png;base64,{get_image_as_base64(logo_path)}" alt="{company_name} Logo">'
+            
+        header_html += f"""
+            <div class="app-header-content">
+                <h2 style="margin:0;">{company_name}</h2>
+                <p style="margin:0;">Test Station Maintenance Control</p>
+            </div>
+        </div>
+        """
+        st.markdown(header_html, unsafe_allow_html=True)
+    else:
+        # Fallback to standard title
+        st.title("Test Station Maintenance Control")
+    
     st.markdown("Track and monitor the status of your test stations")
     
     # Sidebar for data loading options using an expander (hidden by default)
@@ -224,10 +408,12 @@ def main():
             start_date, end_date = selected_date_range
             filtered_df = filtered_df[pd.to_datetime(filtered_df['testDate']).dt.date.between(start_date, end_date)]
             
-        # Summary metrics
+        # Summary metrics with enhanced styling
         st.header("Summary")
         total, passed, failed, pass_rate = create_summary_metrics(filtered_df)
         
+        # Wrap metrics in a styled container
+        st.markdown('<div class="metrics-container">', unsafe_allow_html=True)
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
         
         with metric_col1:
@@ -242,6 +428,8 @@ def main():
         with metric_col4:
             st.metric("Pass Rate", f"{pass_rate}%")
         
+        st.markdown('</div>', unsafe_allow_html=True)
+        
         # Visualizations
         st.header("Visualizations")
         
@@ -255,17 +443,27 @@ def main():
         st.header("Test Data")
         
         if not filtered_df.empty:
-            # Style the dataframe to highlight passed/failed
+            # Style the dataframe to highlight passed/failed using brand colors
             def highlight_results(row):
                 if 'PASSED' in str(row['result']):
-                    return ['', 'background-color: rgba(0, 255, 0, 0.2)', '', '']
+                    return ['', f'background-color: {brand_config.get("colors", {}).get("secondary", "green")}30', '', '']
                 else:
-                    return ['', 'background-color: rgba(255, 0, 0, 0.2)', '', '']
+                    return ['', f'background-color: {brand_config.get("colors", {}).get("danger", "red")}30', '', '']
                 
             styled_df = filtered_df.style.apply(highlight_results, axis=1)
             st.dataframe(styled_df, use_container_width=True)
         else:
             st.warning("No data available with current filters")
+        
+        # Add footer with company info
+        if brand_config:
+            company_name = brand_config.get("company_information", {}).get("company_name", "")
+            footer_html = f"""
+            <div class="app-footer">
+                <p>© {datetime.now().year} {company_name}. All Rights Reserved.</p>
+            </div>
+            """
+            st.markdown(footer_html, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
