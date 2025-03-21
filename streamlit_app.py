@@ -5,6 +5,9 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import base64
+import io
+import json
+from pathlib import Path
 
 # Set page configuration
 st.set_page_config(
@@ -27,26 +30,41 @@ def load_sample_data():
     }
     return pd.DataFrame(data)
 
+def get_app_dir():
+    """Get the application directory in a way that works locally and on Streamlit Cloud"""
+    try:
+        # When running locally
+        return Path(os.path.dirname(__file__))
+    except:
+        # When running on Streamlit Cloud
+        return Path.cwd()
+
 def try_load_default_csv():
     """Try to load the default CSV file if it exists"""
-    default_path = os.path.join(os.path.dirname(__file__), 'results', 'combined_results.csv')
-    if os.path.exists(default_path):
-        try:
-            df = pd.read_csv(default_path)
-            # Extract required columns (assuming same structure as the HTML file)
-            if len(df.columns) >= 9:
-                result_df = pd.DataFrame({
-                    'stationName': df.iloc[:, 5],
-                    'result': df.iloc[:, 6],
-                    'slot': df.iloc[:, 7],
-                    'testDate': df.iloc[:, 8]
-                })
-                return result_df, None
-            else:
-                return None, "CSV file doesn't have enough columns"
-        except Exception as e:
-            return None, f"Error reading default CSV: {str(e)}"
-    return None, "Default CSV file not found"
+    try:
+        # Try to find the file in multiple possible locations
+        possible_paths = [
+            Path(get_app_dir()) / 'results' / 'combined_results.csv',
+            Path('results/combined_results.csv'),
+            Path('./results/combined_results.csv')
+        ]
+        
+        for path in possible_paths:
+            if path.exists():
+                df = pd.read_csv(path)
+                # Extract required columns (assuming same structure as the HTML file)
+                if len(df.columns) >= 9:
+                    result_df = pd.DataFrame({
+                        'stationName': df.iloc[:, 5],
+                        'result': df.iloc[:, 6],
+                        'slot': df.iloc[:, 7],
+                        'testDate': df.iloc[:, 8]
+                    })
+                    return result_df, None
+        
+        return None, "Default CSV file not found"
+    except Exception as e:
+        return None, f"Error reading default CSV: {str(e)}"
 
 def parse_uploaded_csv(uploaded_file):
     """Parse an uploaded CSV file"""
@@ -162,20 +180,61 @@ def create_maintenance_chart(df):
     return fig
 
 def load_brand_config():
-    import json
-    config_path = os.path.join(os.path.dirname(__file__), "assets", "brand_config.json")
+    """Load brand configuration from file or use default if not available"""
     try:
-        with open(config_path, "r") as f:
-            return json.load(f)
+        # Try multiple possible locations for the config file
+        possible_paths = [
+            Path(get_app_dir()) / "assets" / "brand_config.json",
+            Path("assets/brand_config.json"),
+            Path("./assets/brand_config.json")
+        ]
+        
+        for path in possible_paths:
+            if path.exists():
+                with open(path, "r") as f:
+                    return json.load(f)
+        
+        # If no config file found, return default config
+        st.warning("Brand config not found, using default configuration")
+        return {
+            "company_information": {"company_name": "Test Station Maintenance Control"},
+            "colors": {
+                "primary": "#006161",
+                "secondary": "#28a745",
+                "accent": "#0077b6",
+                "danger": "#dc3545",
+                "warning": "#ffc107",
+                "neutral": "#6c757d",
+                "light": "#f8f9fa",
+                "dark": "#212529"
+            },
+            "fonts": {"primary_font": "Roboto"},
+            "css_elements": {
+                "body_color": "#212529",
+                "heading_color": "#212529",
+                "metrics_box_bg": "#F1F3F4",
+                "footer_bg": "#F1F3F4"
+            },
+            "styling": {
+                "table_header_bg": "#006161",
+                "table_header_text": "#FFFFFF",
+                "table_stripe_color": "#F8F9FA"
+            }
+        }
     except Exception as e:
-        st.warning(f"Could not load brand config: {e}")
+        st.warning(f"Could not load brand config: {e}. Using default configuration.")
         return {}
 
 def get_image_as_base64(image_path):
     """Convert an image to base64 for embedding in HTML/CSS"""
     try:
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode('utf-8')
+        # Handle both string and Path objects
+        image_path = Path(image_path) if not isinstance(image_path, Path) else image_path
+        
+        if image_path.exists():
+            with open(image_path, "rb") as img_file:
+                return base64.b64encode(img_file.read()).decode('utf-8')
+        return ""
     except Exception as e:
         st.warning(f"Error loading image {image_path}: {e}")
         return ""
@@ -183,21 +242,35 @@ def get_image_as_base64(image_path):
 # Load brand configuration
 brand_config = load_brand_config()
 
+# Primary color for styling elements
+primary_color = brand_config.get("colors", {}).get("primary", "#006161")
+
 # Create comprehensive CSS based on brand config
 if brand_config:
     # Try to load the logo for header
-    logo_path = os.path.join(os.path.dirname(__file__), brand_config.get("assets", {}).get("logo_path", ""))
-    logo_base64 = get_image_as_base64(logo_path) if os.path.exists(logo_path) else ""
+    logo_path = None
+    possible_logo_paths = [
+        Path(get_app_dir()) / brand_config.get("assets", {}).get("logo_path", ""),
+        Path("assets") / "logo.png",
+        Path("./assets/logo.png")
+    ]
     
-    primary_color = brand_config.get("colors", {}).get("primary", "#000")
-    secondary_color = brand_config.get("colors", {}).get("secondary", "#000")
-    accent_color = brand_config.get("colors", {}).get("accent", "#000")
-    danger_color = brand_config.get("colors", {}).get("danger", "#000")
-    neutral_color = brand_config.get("colors", {}).get("neutral", "#000")
-    light_color = brand_config.get("colors", {}).get("light", "#000")
-    dark_color = brand_config.get("colors", {}).get("dark", "#000")
+    for path in possible_logo_paths:
+        if path.exists():
+            logo_path = path
+            break
+            
+    logo_base64 = get_image_as_base64(logo_path) if logo_path else ""
     
-    primary_font = brand_config.get("fonts", {}).get("primary_font", "sans-serif")
+    primary_color = brand_config.get("colors", {}).get("primary", "#006161")
+    secondary_color = brand_config.get("colors", {}).get("secondary", "#28a745")
+    accent_color = brand_config.get("colors", {}).get("accent", "#0077b6")
+    danger_color = brand_config.get("colors", {}).get("danger", "#dc3545")
+    neutral_color = brand_config.get("colors", {}).get("neutral", "#6c757d")
+    light_color = brand_config.get("colors", {}).get("light", "#f8f9fa")
+    dark_color = brand_config.get("colors", {}).get("dark", "#212529")
+    
+    primary_font = brand_config.get("fonts", {}).get("primary_font", "Roboto")
     
     css = f"""
     <style>
@@ -206,7 +279,7 @@ if brand_config:
     /* Base elements */
     body, .stApp {{
         font-family: '{primary_font}', sans-serif !important;
-        color: {brand_config.get("css_elements", {}).get("body_color", "#000")};
+        color: {brand_config.get("css_elements", {}).get("body_color", "#212529")};
         background-color: #f8f9fa;
     }}
     
@@ -398,13 +471,25 @@ def main():
     # Custom header with logo if available
     if brand_config:
         company_name = brand_config.get("company_information", {}).get("company_name", "Test Station Maintenance Control")
-        logo_path = os.path.join(os.path.dirname(__file__), brand_config.get("assets", {}).get("logo_path", ""))
+        
+        # Try to find the logo in multiple possible locations
+        logo_path = None
+        possible_logo_paths = [
+            Path(get_app_dir()) / brand_config.get("assets", {}).get("logo_path", ""),
+            Path("assets") / "logo.png",
+            Path("./assets/logo.png")
+        ]
+        
+        for path in possible_logo_paths:
+            if path.exists():
+                logo_path = path
+                break
         
         header_html = f"""
         <div class="app-header">
         """
         
-        if os.path.exists(logo_path):
+        if logo_path and logo_path.exists():
             header_html += f'<img src="data:image/png;base64,{get_image_as_base64(logo_path)}" alt="{company_name} Logo">'
             
         header_html += f"""
@@ -459,9 +544,20 @@ def main():
     
     # Apply JSON filter rules before user filters
     try:
-        import json
-        with open(os.path.join(os.path.dirname(__file__), "filter_rules.json"), "r") as f:
-            filter_rules = json.load(f)
+        # Try to load filter rules from multiple possible locations
+        filter_rules = {}
+        possible_rules_paths = [
+            Path(get_app_dir()) / "filter_rules.json",
+            Path("filter_rules.json"),
+            Path("./filter_rules.json")
+        ]
+        
+        for path in possible_rules_paths:
+            if path.exists():
+                with open(path, "r") as f:
+                    filter_rules = json.load(f)
+                break
+                
         for rule in filter_rules.get("filters", []):
             if rule.get("column") == "result" and rule.get("condition") == "contains":
                 pattern = rule.get("value", "")
