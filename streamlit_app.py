@@ -303,8 +303,8 @@ if brand_config:
     
     /* Header styling */
     .app-header {{
-        background-color: white;
-        color: {brand_config.get("css_elements", {}).get("heading_color", "#000")};
+        background-color: {primary_color};
+        color: white;
         padding: 1.5rem;
         border-radius: 10px;
         margin-bottom: 1.5rem;
@@ -409,7 +409,7 @@ def main():
             
         header_html += f"""
             <div class="app-header-content">
-                <h2 style="margin:0;">{company_name}</h2>
+                <h2 style="margin:0;" color="white" !important>{company_name}</h2>
                 <p style="margin:0;">Test Station Maintenance Control</p>
             </div>
         </div>
