@@ -16,6 +16,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Helper function to convert string dates to datetime objects
+def parse_date_column(df, date_column='testDate'):
+    """Parse string date column to datetime objects"""
+    if date_column in df.columns:
+        try:
+            df[date_column] = pd.to_datetime(df[date_column])
+            return df
+        except Exception as e:
+            st.warning(f"Could not parse date column {date_column}: {e}")
+    return df
+
 # Helper functions
 def load_sample_data():
     """Load sample data when no file is uploaded"""
@@ -28,7 +39,11 @@ def load_sample_data():
         'cycleCount': [120, 230, 95, 310, 180],
         'maintenanceDue': [30, 5, 15, -2, 20]  # Days until maintenance is due (negative = overdue)
     }
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    # Convert date columns to datetime
+    for col in ['testDate', 'lastMaintenance']:
+        df[col] = pd.to_datetime(df[col])
+    return df
 
 def get_app_dir():
     """Get the application directory in a way that works locally and on Streamlit Cloud"""
@@ -78,6 +93,8 @@ def parse_uploaded_csv(uploaded_file):
                 'slot': df.iloc[:, 7],
                 'testDate': df.iloc[:, 8]
             })
+            # Convert date columns to datetime
+            result_df = parse_date_column(result_df, 'testDate')
             return result_df, None
         else:
             return None, "CSV file doesn't have enough columns"
@@ -485,7 +502,23 @@ def main():
                 logo_path = path
                 break
         
+        # Use inline styling with !important and additional HTML attributes for color forcing
         header_html = f"""
+        <style>
+        .header-company-name {{
+            color: white !important;
+            font-weight: 600 !important;
+            margin: 0 !important;
+            text-shadow: none !important;
+            font-family: '{primary_font}', sans-serif !important;
+        }}
+        .header-subtitle {{
+            color: white !important;
+            margin: 0 !important;
+            text-shadow: none !important;
+            font-family: '{primary_font}', sans-serif !important;
+        }}
+        </style>
         <div class="app-header">
         """
         
@@ -494,8 +527,8 @@ def main():
             
         header_html += f"""
             <div class="app-header-content">
-                <h2 style="margin:0;" color="white" !important>{company_name}</h2>
-                <p style="margin:0;">Test Station Maintenance Control</p>
+                <h2 class="header-company-name">{company_name}</h2>
+                <p class="header-subtitle">Test Station Maintenance Control</p>
             </div>
         </div>
         """
@@ -518,6 +551,30 @@ def main():
             use_sample = st.button("Sample Data")
         with col2:
             refresh = st.button("Refresh")
+        
+        # Date Range Filter
+        st.subheader("Date Filter")
+        
+        # Calculate default date range (last month)
+        today = datetime.now().date()
+        last_month = today - timedelta(days=30)
+        
+        # Date range picker with default values
+        start_date = st.date_input(
+            "Start Date",
+            value=last_month,  # Default to last month
+            max_value=today
+        )
+        
+        end_date = st.date_input(
+            "End Date",
+            value=today,  # Default to today
+            min_value=start_date,
+            max_value=today
+        )
+        
+        # Option to disable date filter
+        disable_date_filter = st.checkbox("Show all dates", value=False)
             
         st.markdown("---")
         st.markdown("### About")
@@ -592,6 +649,28 @@ def main():
     
     # Main content - only show if we have data
     if df is not None:
+        # Convert date columns to datetime if they're not already
+        if 'testDate' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['testDate']):
+            df = parse_date_column(df, 'testDate')
+            
+        if 'lastMaintenance' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['lastMaintenance']):
+            df = parse_date_column(df, 'lastMaintenance')
+        
+        # Apply date filter if enabled
+        if not disable_date_filter and 'testDate' in df.columns:
+            # Convert sidebar date inputs to datetime for filtering
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
+            
+            # Apply date filter
+            date_filtered_df = df[(df['testDate'] >= start_datetime) & (df['testDate'] <= end_datetime)]
+            
+            # Show notification of filtering
+            if len(date_filtered_df) < len(df):
+                st.info(f"Showing {len(date_filtered_df)} of {len(df)} records based on date filter ({start_date} to {end_date})")
+                
+            df = date_filtered_df
+        
         # Add tabs for better navigation
         tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🔧 Maintenance", "📝 Test Results"])
         
@@ -696,8 +775,6 @@ def display_dashboard(df):
                 <div style="font-size: 1.5rem;">{stations}</div>
                 <div>Test Stations</div>
                 <hr style="margin: 1rem 0;">
-                <div style="font-size: 1.5rem;">{slots}</div>
-                <div>Total Slots</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -737,8 +814,7 @@ def display_dashboard(df):
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.subheader("Test Results by Station")
+            st.markdown('<div class="card"><div class="card-header">Test Results by Station</div>', unsafe_allow_html=True)
             if len(filtered_df) > 0:
                 station_chart = create_station_chart(filtered_df)
                 st.plotly_chart(station_chart, use_container_width=True)
@@ -747,8 +823,7 @@ def display_dashboard(df):
             st.markdown('</div>', unsafe_allow_html=True)
                 
         with col2:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.subheader("Maintenance Status")
+            st.markdown('<div class="card"><div class="card-header">Maintenance Status</div>', unsafe_allow_html=True)
             if len(filtered_df) > 0 and 'maintenanceDue' in filtered_df.columns:
                 maintenance_chart = create_maintenance_chart(filtered_df)
                 st.plotly_chart(maintenance_chart, use_container_width=True)
@@ -923,6 +998,79 @@ def display_test_results(df):
     """Display test results data"""
     st.header("Test Results")
     
+    # Date range filter section
+    st.subheader("Quick Date Range Filter")
+    
+    # Show date range information if available
+    if 'testDate' in df.columns and pd.api.types.is_datetime64_any_dtype(df['testDate']):
+        min_date = df['testDate'].min().date()
+        max_date = df['testDate'].max().date()
+        st.info(f"Data available from {min_date} to {max_date}")
+        
+        # Quick date range selector
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            date_range_option = st.selectbox(
+                "Quick select:", 
+                ["All Data", "Today", "Yesterday", "Last 7 Days", "Last 30 Days", "This Month", "Last Month", "Custom Range"],
+                key="date_range_select"
+            )
+        
+        with col2:
+            apply_date_filter = st.checkbox("Apply date filter", value=True)
+        
+        # Custom range inputs (show only if Custom Range is selected)
+        custom_start_date = None
+        custom_end_date = None
+        if date_range_option == "Custom Range":
+            custom_col1, custom_col2 = st.columns(2)
+            with custom_col1:
+                custom_start_date = st.date_input("Start date", min_date, key="custom_start_date")
+            with custom_col2:
+                custom_end_date = st.date_input("End date", max_date, key="custom_end_date")
+        
+        # Apply date filtering based on selection
+        if apply_date_filter and date_range_option != "All Data":
+            today = datetime.now().date()
+            
+            # Calculate date range based on selection
+            if date_range_option == "Today":
+                start_date = today
+                end_date = today
+            elif date_range_option == "Yesterday":
+                start_date = today - timedelta(days=1)
+                end_date = today - timedelta(days=1)
+            elif date_range_option == "Last 7 Days":
+                start_date = today - timedelta(days=7)
+                end_date = today
+            elif date_range_option == "Last 30 Days":
+                start_date = today - timedelta(days=30)
+                end_date = today
+            elif date_range_option == "This Month":
+                start_date = today.replace(day=1)
+                end_date = today
+            elif date_range_option == "Last Month":
+                last_month = today.replace(day=1) - timedelta(days=1)
+                start_date = last_month.replace(day=1)
+                end_date = last_month
+            elif date_range_option == "Custom Range":
+                start_date = custom_start_date
+                end_date = custom_end_date
+            
+            # Apply date filter
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
+            
+            filtered_df = df[(df['testDate'] >= start_datetime) & (df['testDate'] <= end_datetime)]
+            
+            # Show notification of filtering
+            if len(filtered_df) < len(df):
+                st.success(f"Date filter applied: {start_date} to {end_date} ({len(filtered_df)} of {len(df)} records)")
+            else:
+                st.info(f"Showing all records in date range: {start_date} to {end_date}")
+                
+            df = filtered_df
+    
     # Filter options - updated to remove slot filter
     col1, col2 = st.columns(2)
     
@@ -947,7 +1095,7 @@ def display_test_results(df):
         filtered_df = filtered_df[filtered_df['result'].astype(str) == selected_result]
     
     # Display results in a modern table card
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card"><div class="card-header">Test Results Analysis</div>', unsafe_allow_html=True)
     
     if not filtered_df.empty:
         # Group by slot to show summary by slot
