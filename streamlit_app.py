@@ -8,6 +8,7 @@ import base64
 import io
 import json
 from pathlib import Path
+import openpyxl  # Add this import for Excel handling
 
 # Set page configuration
 st.set_page_config(
@@ -67,15 +68,34 @@ def try_load_default_csv():
         for path in possible_paths:
             if path.exists():
                 df = pd.read_csv(path)
-                # Extract required columns (assuming same structure as the HTML file)
-                if len(df.columns) >= 9:
-                    result_df = pd.DataFrame({
-                        'stationName': df.iloc[:, 5],
-                        'result': df.iloc[:, 6],
-                        'slot': df.iloc[:, 7],
-                        'testDate': df.iloc[:, 8]
-                    })
-                    return result_df, None
+                # Extract required columns with same logic as parse_uploaded_csv
+                result_dict = {
+                    'stationName': df.iloc[:, 5],
+                    'result': df.iloc[:, 6],
+                    'slot': df.iloc[:, 7],
+                    'testDate': df.iloc[:, 8]
+                }
+                
+                # Look for maintenance columns
+                for col_name in df.columns:
+                    if 'lastMaintenance' in col_name.lower():
+                        result_dict['lastMaintenance'] = df[col_name]
+                    elif 'maintenancedue' in col_name.lower():
+                        result_dict['maintenanceDue'] = df[col_name]
+                    elif 'cyclecount' in col_name.lower():
+                        result_dict['cycleCount'] = df[col_name]
+                
+                result_df = pd.DataFrame(result_dict)
+                
+                # Parse dates
+                result_df = parse_date_column(result_df, 'testDate')
+                if 'lastMaintenance' in result_df.columns:
+                    result_df = parse_date_column(result_df, 'lastMaintenance')
+                
+                # Calculate maintenance due if needed
+                result_df = calculate_maintenance_due(result_df)
+                
+                return result_df, None
         
         return None, "Default CSV file not found"
     except Exception as e:
@@ -85,19 +105,35 @@ def parse_uploaded_csv(uploaded_file):
     """Parse an uploaded CSV file"""
     try:
         df = pd.read_csv(uploaded_file)
-        # Extract required columns (assuming same structure as the HTML file)
-        if len(df.columns) >= 9:
-            result_df = pd.DataFrame({
-                'stationName': df.iloc[:, 5],
-                'result': df.iloc[:, 6],
-                'slot': df.iloc[:, 7],
-                'testDate': df.iloc[:, 8]
-            })
-            # Convert date columns to datetime
-            result_df = parse_date_column(result_df, 'testDate')
-            return result_df, None
-        else:
-            return None, "CSV file doesn't have enough columns"
+        # Create a dictionary for the result dataframe
+        result_dict = {
+            'stationName': df.iloc[:, 5],
+            'result': df.iloc[:, 6],
+            'slot': df.iloc[:, 7],
+            'testDate': df.iloc[:, 8]
+        }
+        
+        # Look for maintenance columns (could be in different positions)
+        for col_name in df.columns:
+            if 'lastMaintenance' in col_name.lower():
+                result_dict['lastMaintenance'] = df[col_name]
+            elif 'maintenancedue' in col_name.lower():
+                result_dict['maintenanceDue'] = df[col_name]
+            elif 'cyclecount' in col_name.lower():
+                result_dict['cycleCount'] = df[col_name]
+        
+        # Create dataframe from the extracted columns
+        result_df = pd.DataFrame(result_dict)
+        
+        # Convert date columns to datetime
+        result_df = parse_date_column(result_df, 'testDate')
+        if 'lastMaintenance' in result_df.columns:
+            result_df = parse_date_column(result_df, 'lastMaintenance')
+            
+        # Calculate maintenance due dates if needed
+        result_df = calculate_maintenance_due(result_df)
+        
+        return result_df, None
     except Exception as e:
         return None, f"Error parsing CSV: {str(e)}"
 
@@ -123,7 +159,8 @@ def create_station_chart(df):
         lambda x: pd.Series({
             'Passed': sum(x['result'].str.contains('PASSED', case=False, na=False)),
             'Failed': len(x) - sum(x['result'].str.contains('PASSED', case=False, na=False))
-        })
+        }),
+        include_groups=False
     ).reset_index()
     
     # Melt the dataframe for easier plotting
@@ -655,6 +692,9 @@ def main():
             
         if 'lastMaintenance' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['lastMaintenance']):
             df = parse_date_column(df, 'lastMaintenance')
+            
+        # Ensure we have maintenance data
+        df = calculate_maintenance_due(df)
         
         # Apply date filter if enabled
         if not disable_date_filter and 'testDate' in df.columns:
@@ -701,7 +741,8 @@ def calculate_slot_pass_rate(df):
             'total_tests': len(x),
             'passed_tests': sum(x['result'].str.contains('PASSED', case=False, na=False)),
             'pass_rate': round((sum(x['result'].str.contains('PASSED', case=False, na=False)) / len(x)) * 100) if len(x) > 0 else 0
-        })
+        }),
+        include_groups=False
     ).reset_index()
     
     # Add status for rise slot change needed
@@ -854,6 +895,186 @@ def display_dashboard(df):
     except Exception as e:
         st.error(f"Error displaying dashboard: {e}")
 
+def get_maintenance_excel_path():
+    """Get path to the maintenance Excel file"""
+    # Try multiple possible locations
+    possible_paths = [
+        Path(get_app_dir()) / "assets" / "control_man.xlsx",
+        Path("assets/control_man.xlsx"),
+        Path("./assets/control_man.xlsx")
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            return path
+            
+    # If file doesn't exist, return the path where we'll create it
+    return Path(get_app_dir()) / "assets" / "control_man.xlsx"
+
+def load_maintenance_data():
+    """Load maintenance data from Excel file or create if doesn't exist"""
+    excel_path = get_maintenance_excel_path()
+    
+    # Define expected columns
+    expected_columns = [
+        'stationName', 
+        'slot', 
+        'maintenanceDate', 
+        'scheduledDate',
+        'maintenanceBy', 
+        'status', 
+        'notes',
+        'timestamp'
+    ]
+    
+    try:
+        if excel_path.exists():
+            try:
+                # Try to load existing Excel file
+                maintenance_df = pd.read_excel(excel_path)
+                
+                # Check if all required columns exist
+                missing_columns = [col for col in expected_columns if col not in maintenance_df.columns]
+                
+                # If columns are missing, add them
+                if missing_columns:
+                    st.warning(f"Adding missing columns to maintenance data: {', '.join(missing_columns)}")
+                    for col in missing_columns:
+                        maintenance_df[col] = None
+                
+                # Ensure date columns are datetime
+                if 'maintenanceDate' in maintenance_df.columns:
+                    maintenance_df['maintenanceDate'] = pd.to_datetime(maintenance_df['maintenanceDate'], errors='coerce')
+                if 'scheduledDate' in maintenance_df.columns:
+                    maintenance_df['scheduledDate'] = pd.to_datetime(maintenance_df['scheduledDate'], errors='coerce')
+                if 'timestamp' in maintenance_df.columns:
+                    maintenance_df['timestamp'] = pd.to_datetime(maintenance_df['timestamp'], errors='coerce')
+                
+                return maintenance_df
+            except Exception as e:
+                st.error(f"Error reading maintenance Excel file: {e}")
+                # If there's an error reading the file, we'll create a new one
+        
+        # Create a new dataframe with appropriate columns
+        maintenance_df = pd.DataFrame(columns=expected_columns)
+        
+        # Ensure the assets directory exists
+        excel_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save the empty dataframe to Excel
+        maintenance_df.to_excel(excel_path, index=False)
+        return maintenance_df
+    except Exception as e:
+        st.error(f"Error handling maintenance data: {e}")
+        # Return empty DataFrame with correct columns as fallback
+        return pd.DataFrame(columns=expected_columns)
+
+def save_maintenance_data(maintenance_df):
+    """Save maintenance data to Excel file"""
+    excel_path = get_maintenance_excel_path()
+    try:
+        # Ensure the assets directory exists
+        excel_path.parent.mkdir(parents=True, exist_ok=True)
+        maintenance_df.to_excel(excel_path, index=False)
+        return True
+    except Exception as e:
+        st.error(f"Error saving maintenance data: {e}")
+        return False
+
+def schedule_maintenance(station, slot, scheduled_date, notes=""):
+    """Schedule maintenance for a station/slot"""
+    try:
+        maintenance_df = load_maintenance_data()
+        
+        # Add new scheduled maintenance
+        new_record = {
+            'stationName': station,
+            'slot': slot,
+            'scheduledDate': scheduled_date,
+            'maintenanceDate': None,
+            'maintenanceBy': '',
+            'status': 'Scheduled',
+            'notes': notes,
+            'timestamp': datetime.now()
+        }
+        
+        maintenance_df = pd.concat([maintenance_df, pd.DataFrame([new_record])], ignore_index=True)
+        success = save_maintenance_data(maintenance_df)
+        return success
+    except Exception as e:
+        st.error(f"Error in schedule_maintenance: {e}")
+        return False
+
+def record_completed_maintenance(station, slot, maintenance_date, maintenance_by, notes=""):
+    """Record completed maintenance for a station/slot"""
+    try:
+        maintenance_df = load_maintenance_data()
+        
+        # Debug info
+        if 'stationName' not in maintenance_df.columns:
+            st.error(f"Column 'stationName' not found in maintenance data. Available columns: {maintenance_df.columns.tolist()}")
+            # Add the missing column
+            maintenance_df['stationName'] = None
+            
+        if 'slot' not in maintenance_df.columns:
+            st.error(f"Column 'slot' not found in maintenance data.")
+            # Add the missing column
+            maintenance_df['slot'] = None
+            
+        if 'status' not in maintenance_df.columns:
+            st.error(f"Column 'status' not found in maintenance data.")
+            # Add the missing column
+            maintenance_df['status'] = None
+        
+        # Check if there's a scheduled maintenance for this station/slot
+        try:
+            scheduled_mask = (
+                (maintenance_df['stationName'] == station) & 
+                (maintenance_df['slot'] == slot) & 
+                (maintenance_df['status'] == 'Scheduled')
+            )
+            
+            if any(scheduled_mask):
+                # Update the scheduled maintenance
+                idx = maintenance_df.loc[scheduled_mask].index[0]
+                maintenance_df.loc[idx, 'maintenanceDate'] = maintenance_date
+                maintenance_df.loc[idx, 'maintenanceBy'] = maintenance_by
+                maintenance_df.loc[idx, 'status'] = 'Completed'
+                maintenance_df.loc[idx, 'notes'] = notes if notes else maintenance_df.loc[idx, 'notes']
+            else:
+                # Add new completed maintenance record
+                new_record = {
+                    'stationName': station,
+                    'slot': slot,
+                    'maintenanceDate': maintenance_date,
+                    'scheduledDate': None,
+                    'maintenanceBy': maintenance_by,
+                    'status': 'Completed',
+                    'notes': notes,
+                    'timestamp': datetime.now()
+                }
+                maintenance_df = pd.concat([maintenance_df, pd.DataFrame([new_record])], ignore_index=True)
+        except Exception as e:
+            st.error(f"Error processing maintenance record: {e}")
+            # Create a new record regardless of error
+            new_record = {
+                'stationName': station,
+                'slot': slot,
+                'maintenanceDate': maintenance_date,
+                'scheduledDate': None,
+                'maintenanceBy': maintenance_by,
+                'status': 'Completed',
+                'notes': notes,
+                'timestamp': datetime.now()
+            }
+            maintenance_df = pd.concat([maintenance_df, pd.DataFrame([new_record])], ignore_index=True)
+        
+        success = save_maintenance_data(maintenance_df)
+        return success
+    except Exception as e:
+        st.error(f"Error in record_completed_maintenance: {e}")
+        return False
+
 def display_maintenance(df):
     """Display detailed maintenance information"""
     st.header("Maintenance Schedule")
@@ -862,50 +1083,195 @@ def display_maintenance(df):
         st.warning("Maintenance data not available in the current dataset")
         return
     
+    # Load maintenance history from Excel file
+    maintenance_history = load_maintenance_data()
+    
     # Create maintenance status categories
     maintenance_df = df.copy()
     maintenance_df['status'] = 'OK'
     maintenance_df.loc[maintenance_df['maintenanceDue'] <= 7, 'status'] = 'Due Soon'
     maintenance_df.loc[maintenance_df['maintenanceDue'] < 0, 'status'] = 'Overdue'
     
-    # Calculate pass rates for each slot to determine Rise component changes
-    pass_rates = calculate_slot_pass_rate(df)
+    # Get latest entry for each station-slot combination to prevent duplicates
+    # First sort by testDate (descending) to get most recent entries first
+    if 'testDate' in maintenance_df.columns:
+        maintenance_df = maintenance_df.sort_values('testDate', ascending=False)
+    
+    # Then take the first occurrence of each station-slot combination
+    maintenance_df = maintenance_df.drop_duplicates(subset=['stationName', 'slot'])
+    
+    # Get all unique station-slot combinations (should be unique now)
+    stations_slots = maintenance_df[['stationName', 'slot']]
+    
+    # Create a comprehensive maintenance overview table
+    st.subheader("Station & Slot Maintenance Overview")
+    
+    with st.expander("View and Update All Stations", expanded=True):
+        # Create a dataframe for the maintenance manager
+        manager_df = pd.DataFrame()
+        # Add station and slot columns
+        manager_df['Station'] = stations_slots['stationName']
+        manager_df['Slot'] = stations_slots['slot']
+        
+        # Convert both sides of the merge to string to avoid type mismatch
+        manager_df['Slot'] = manager_df['Slot'].astype(str)
+        maintenance_df_for_merge = maintenance_df.copy()
+        maintenance_df_for_merge['slot'] = maintenance_df_for_merge['slot'].astype(str)
+        
+        # Add last maintenance date from our dataset
+        manager_df = manager_df.merge(
+            maintenance_df_for_merge[['stationName', 'slot', 'lastMaintenance', 'maintenanceDue', 'status']],
+            left_on=['Station', 'Slot'],
+            right_on=['stationName', 'slot'],
+            how='left'
+        )
+        
+        # Format dates for display
+        manager_df['Last Maintenance'] = manager_df['lastMaintenance'].dt.strftime('%Y-%m-%d')
+        manager_df['Days Until Due'] = manager_df['maintenanceDue']
+        manager_df['Status'] = manager_df['status']
+        
+        # Add recorded maintenance dates from history if available
+        if not maintenance_history.empty:
+            # Find the most recent maintenance for each station-slot
+            completed_maintenance = maintenance_history[maintenance_history['status'] == 'Completed']
+            if not completed_maintenance.empty:
+                # Convert the slot column to string to match the manager_df
+                completed_maintenance = completed_maintenance.copy()
+                completed_maintenance['slot'] = completed_maintenance['slot'].astype(str)
+                
+                latest_maintenance = completed_maintenance.sort_values('maintenanceDate').groupby(['stationName', 'slot']).last().reset_index()
+                
+                if not latest_maintenance.empty:
+                    # Add the recorded maintenance date
+                    recorded_dates = latest_maintenance[['stationName', 'slot', 'maintenanceDate']]
+                    recorded_dates['Recorded Maintenance'] = recorded_dates['maintenanceDate'].dt.strftime('%Y-%m-%d')
+                    
+                    manager_df = manager_df.merge(
+                        recorded_dates[['stationName', 'slot', 'Recorded Maintenance']],
+                        left_on=['stationName', 'slot'],
+                        right_on=['stationName', 'slot'],
+                        how='left'
+                    )
+        
+        # Clean up dataframe for display
+        display_df = manager_df[['Station', 'Slot', 'Last Maintenance', 'Days Until Due', 'Status']].copy()
+        if 'Recorded Maintenance' in manager_df.columns:
+            display_df['Recorded Maintenance'] = manager_df['Recorded Maintenance']
+        
+        # Display the table with update buttons
+        st.dataframe(display_df, use_container_width=True)
+        
+        # Add a form to update maintenance dates
+        with st.form("update_maintenance_form"):
+            st.subheader("Update Maintenance Date")
+            
+            # Create two columns for selecting station and slot
+            col1, col2 = st.columns(2)
+            
+            # Station dropdown
+            with col1:
+                station_options = sorted(stations_slots['stationName'].unique())
+                selected_update_station = st.selectbox("Station", station_options, key="update_station")
+            
+            # Slot dropdown (filtered by selected station)
+            with col2:
+                filtered_slots = stations_slots[stations_slots['stationName'] == selected_update_station]['slot'].tolist()
+                selected_update_slot = st.selectbox("Slot", filtered_slots, key="update_slot")
+            
+            # Add fields for the maintenance information
+            update_date = st.date_input("Maintenance Date", value=datetime.now().date())
+            maintenance_by = st.text_input("Maintenance Performed By")
+            update_notes = st.text_area("Notes", height=100)
+            
+            # Submit button
+            submitted = st.form_submit_button("Update Maintenance Record")
+            if submitted:
+                success = record_completed_maintenance(
+                    selected_update_station,
+                    selected_update_slot,
+                    update_date,
+                    maintenance_by,
+                    update_notes
+                )
+                if success:
+                    st.success(f"Maintenance record updated for {selected_update_station} - {selected_update_slot}")
+                    # Rerun to show the updated data
+                    st.experimental_rerun()
+
+    # Display maintenance history in a collapsible section
+    with st.expander("Maintenance History", expanded=False):
+        if not maintenance_history.empty:
+            # Sort by timestamp (newest first) and format dates for display
+            history_display = maintenance_history.sort_values('timestamp', ascending=False).copy()
+            
+            # Format datetime columns for better display
+            if 'maintenanceDate' in history_display.columns:
+                history_display['maintenanceDate'] = history_display['maintenanceDate'].dt.strftime('%Y-%m-%d')
+            if 'scheduledDate' in history_display.columns:
+                history_display['scheduledDate'] = history_display['scheduledDate'].dt.strftime('%Y-%m-%d')
+            if 'timestamp' in history_display.columns:
+                history_display['timestamp'] = history_display['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+                
+            st.dataframe(history_display, use_container_width=True)
+        else:
+            st.info("No maintenance history records found")
     
     # Add information about slots needing rise component change
-    st.markdown("""
-    <div class="card">
-        <div class="card-header">Rise Component Changes Needed</div>
-        <div>Slots with pass rate below 80% need Rise component replacement.</div>
-        <table style="width:100%; margin-top:1rem;">
-            <tr style="background-color:#f1f3f5; font-weight:600;">
-                <th style="padding:8px; text-align:left;">Station</th>
-                <th style="padding:8px; text-align:left;">Slot</th>
-                <th style="padding:8px; text-align:right;">Pass Rate</th>
-                <th style="padding:8px; text-align:center;">Status</th>
-            </tr>
-    """, unsafe_allow_html=True)
+    pass_rates = calculate_slot_pass_rate(df)
+    st.subheader("Rise Component Status")
+
+    # Sort the pass_rates DataFrame for better readability
+    sorted_pass_rates = pass_rates.sort_values(['stationName', 'slot'])
     
-    # Display slots needing rise component change
-    for _, row in pass_rates.iterrows():
-        status_color = "#28a745" if row['pass_rate'] >= 80 else "#dc3545"
+    # Create a complete HTML container for the table
+    table_html = """
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="card-header" style="padding: 1rem 1.5rem;">Rise Component Changes Needed</div>
+        <div style="padding: 1rem 1.5rem;">Slots with pass rate below 80% need Rise component replacement.</div>
+        <div style="width: 100%; overflow-x: auto; padding-bottom: 1rem;">
+            <table style="width:100%; border-collapse: collapse; min-width: 100%;">
+                <thead>
+                    <tr style="background-color:#f1f3f5; font-weight:600;">
+                        <th style="padding:8px 16px; text-align:left;">Station</th>
+                        <th style="padding:8px 16px; text-align:left;">Slot</th>
+                        <th style="padding:8px 16px; text-align:right;">Pass Rate</th>
+                        <th style="padding:8px 16px; text-align:center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    
+    # Generate all the table rows from the sorted pass_rates DataFrame
+    for _, row in sorted_pass_rates.iterrows():
+        status_color = "#28a745" if row['pass_rate'] >= 80 else "#dc3545"  # Green if pass rate >= 80%, otherwise red  
         status_text = "OK" if row['pass_rate'] >= 80 else "Change Needed"
         
-        st.markdown(f"""
-            <tr>
-                <td style="padding:8px;">{row['stationName']}</td>
-                <td style="padding:8px;">{row['slot']}</td>
-                <td style="padding:8px; text-align:right;">{row['pass_rate']}%</td>
-                <td style="padding:8px; text-align:center;">
-                    <span style="color:white; background-color:{status_color}; padding:4px 8px; border-radius:4px; font-size:0.8rem;">
-                        {status_text}
-                    </span>
-                </td>
-            </tr>
-        """, unsafe_allow_html=True)
+        table_html += f"""
+    <tr style="border-bottom: 1px solid #eee;">
+        <td style="padding:8px 16px; white-space: nowrap;">{row['stationName']}</td>
+        <td style="padding:8px 16px; white-space: nowrap;">{row['slot']}</td>
+        <td style="padding:8px 16px; text-align:right;">{row['pass_rate']}%</td>
+        <td style="padding:8px 16px; text-align:center;">
+            <span style="color:white; background-color:{status_color}; padding:4px 8px; border-radius:4px; font-size:0.8rem;">
+                {status_text}
+            </span>
+        </td>
+    </tr>"""
     
-    st.markdown("</table></div>", unsafe_allow_html=True)
+    # Close the HTML table structure properly
+    table_html += """
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    
+    # Display the complete table in a single markdown call
+    st.markdown(table_html, unsafe_allow_html=True)
     
     # Filter options with dynamic slot options
+    st.subheader("Maintenance Detail View")
     col1, col2, col3 = st.columns(3)
     with col1:
         status_filter = st.multiselect(
@@ -927,16 +1293,18 @@ def display_maintenance(df):
     
     # Apply filters
     if status_filter:
-        maintenance_df = maintenance_df[maintenance_df['status'].isin(status_filter)]
+        filtered_maintenance_df = maintenance_df[maintenance_df['status'].isin(status_filter)]
+    else:
+        filtered_maintenance_df = maintenance_df
     
     # Apply sorting
     if sort_by == "Due Date":
-        maintenance_df = maintenance_df.sort_values(by='maintenanceDue')
+        filtered_maintenance_df = filtered_maintenance_df.sort_values(by='maintenanceDue')
     elif sort_by == "Station Name":
-        maintenance_df = maintenance_df.sort_values(by=['stationName', 'slot'])
+        filtered_maintenance_df = filtered_maintenance_df.sort_values(by=['stationName', 'slot'])
     else:  # Cycle Count
-        if 'cycleCount' in maintenance_df.columns:
-            maintenance_df = maintenance_df.sort_values(by='cycleCount', ascending=False)
+        if 'cycleCount' in filtered_maintenance_df.columns:
+            filtered_maintenance_df = filtered_maintenance_df.sort_values(by='cycleCount', ascending=False)
     
     # Apply rise component filter if needed
     if show_rise_change:
@@ -945,13 +1313,13 @@ def display_maintenance(df):
         if not need_rise_change.empty:
             # Create composite key for filtering
             need_rise_change['comp_key'] = need_rise_change['stationName'] + '-' + need_rise_change['slot'].astype(str)
-            maintenance_df['comp_key'] = maintenance_df['stationName'] + '-' + maintenance_df['slot'].astype(str)
-            maintenance_df = maintenance_df[maintenance_df['comp_key'].isin(need_rise_change['comp_key'])]
+            filtered_maintenance_df['comp_key'] = filtered_maintenance_df['stationName'] + '-' + filtered_maintenance_df['slot'].astype(str)
+            filtered_maintenance_df = filtered_maintenance_df[filtered_maintenance_df['comp_key'].isin(need_rise_change['comp_key'])]
     
     # Display each maintenance item in a card
-    st.subheader(f"Maintenance Items ({len(maintenance_df)})")
+    st.info(f"Showing {len(filtered_maintenance_df)} maintenance items")
     
-    for idx, row in maintenance_df.iterrows():
+    for idx, row in filtered_maintenance_df.iterrows():
         # Check if this slot needs rise component change
         station_slot_key = f"{row['stationName']}-{row['slot']}"
         needs_rise = any((pass_rates['stationName'] + '-' + pass_rates['slot'].astype(str) == station_slot_key) & 
@@ -968,6 +1336,30 @@ def display_maintenance(df):
         if needs_rise:
             rise_badge = """<span class="status-badge status-danger" style="margin-left: 8px;">Rise Change Needed</span>"""
         
+        # Check if maintenance is already scheduled or completed for this station/slot
+        scheduled = False
+        completed = False
+        last_maintenance_date = None
+        
+        if not maintenance_history.empty:
+            station_slot_mask = (
+                (maintenance_history['stationName'] == row['stationName']) & 
+                (maintenance_history['slot'] == row['slot'])
+            )
+            
+            if station_slot_mask.any():
+                scheduled_mask = station_slot_mask & (maintenance_history['status'] == 'Scheduled')
+                completed_mask = station_slot_mask & (maintenance_history['status'] == 'Completed')
+                
+                scheduled = scheduled_mask.any()
+                completed = completed_mask.any()
+                
+                if completed:
+                    recent_maintenance = maintenance_history.loc[completed_mask].sort_values(by='maintenanceDate', ascending=False)
+                    if not recent_maintenance.empty and not pd.isna(recent_maintenance.iloc[0]['maintenanceDate']):
+                        last_maintenance_date = recent_maintenance.iloc[0]['maintenanceDate']
+                        
+        # Create the maintenance card with action buttons
         st.markdown(f"""
         <div class="card" style="border-left: 5px solid {{'Overdue': '#dc3545', 'Due Soon': '#ffc107', 'OK': '#28a745'}}['{row['status']}'];">
             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -988,11 +1380,65 @@ def display_maintenance(df):
                 </div>
                 <div>
                     <p><strong>Cycle Count:</strong> {row.get('cycleCount', 'N/A')}</p>
-                    <button style="background-color: {primary_color}; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">Schedule Maintenance</button>
                 </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Add maintenance action buttons below the card
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button(f"Schedule Maintenance for {row['stationName']}-{row['slot']}", key=f"schedule_{idx}"):
+                st.session_state[f"show_schedule_{idx}"] = True
+        
+        with col2:
+            if st.button(f"Record Completed Maintenance for {row['stationName']}-{row['slot']}", key=f"record_{idx}"):
+                st.session_state[f"show_record_{idx}"] = True
+        
+        # Show schedule maintenance form if button was clicked
+        if st.session_state.get(f"show_schedule_{idx}", False):
+            with st.form(key=f"schedule_form_{idx}"):
+                st.subheader(f"Schedule Maintenance for {row['stationName']}-{row['slot']}")
+                scheduled_date = st.date_input("Scheduled Date", value=datetime.now().date())
+                notes = st.text_area("Notes", value="", height=100)
+                
+                submitted = st.form_submit_button("Schedule")
+                if submitted:
+                    success = schedule_maintenance(
+                        row['stationName'], 
+                        row['slot'],
+                        scheduled_date,
+                        notes
+                    )
+                    
+                    if success:
+                        st.success("Maintenance scheduled successfully!")
+                        st.session_state[f"show_schedule_{idx}"] = False
+                        # Rerun to show the updated data
+                        st.experimental_rerun()
+        
+        # Show record completed maintenance form if button was clicked
+        if st.session_state.get(f"show_record_{idx}", False):
+                maintenance_date = st.date_input("Maintenance Date", value=datetime.now().date())
+                maintenance_by = st.text_input("Maintenance Performed By")
+                notes = st.text_area("Notes", value="", height=100)
+                
+                submitted = st.form_submit_button("Record")
+                if submitted:
+                    success = record_completed_maintenance(
+                        row['stationName'], 
+                        row['slot'],
+                        maintenance_date,
+                        maintenance_by,
+                        notes
+                    )
+                    
+                    if success:
+                        st.success("Maintenance recorded successfully!")
+                        st.session_state[f"show_record_{idx}"] = False
+                        # Rerun to show the updated data
+                        st.experimental_rerun()
 
 def display_test_results(df):
     """Display test results data"""
@@ -1115,19 +1561,49 @@ def display_test_results(df):
         st.dataframe(slot_summary, use_container_width=True)
         
         st.subheader("All Test Results")
-        # Style the dataframe
-        def highlight_results(row):
-            if 'PASSED' in str(row['result']):
-                return ['', f'background-color: {brand_config.get("colors", {}).get("secondary", "green")}30', '', '']
-            else:
-                return ['', f'background-color: {brand_config.get("colors", {}).get("danger", "red")}30', '', '']
-                
-        styled_df = filtered_df.style.apply(highlight_results, axis=1)
+        
+        # Fix the styling approach to work with any number of columns
+        # Use applymap which applies to specific cells rather than entire rows
+        styled_df = filtered_df.style.applymap(
+            lambda x: f"background-color: {brand_config.get('colors', {}).get('secondary', 'green')}30" 
+                if isinstance(x, str) and 'PASSED' in x 
+                else f"background-color: {brand_config.get('colors', {}).get('danger', 'red')}30" 
+                if isinstance(x, str) and ('FAILED' in x or 'SCRAP' in x)
+                else "",
+            subset=['result']  # Only apply to the 'result' column
+        )
+        
         st.dataframe(styled_df, use_container_width=True)
     else:
         st.warning("No data available with current filters")
     
     st.markdown('</div>', unsafe_allow_html=True)
+
+# Add this new function to calculate maintenance due dates
+def calculate_maintenance_due(df):
+    """Calculate maintenance due dates if they don't exist"""
+    # Make a copy to avoid warnings
+    df = df.copy()
+    
+    # Check if we have lastMaintenance column but no maintenanceDue
+    if 'lastMaintenance' in df.columns and 'maintenanceDue' not in df.columns:
+        # Ensure lastMaintenance is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df['lastMaintenance']):
+            df['lastMaintenance'] = pd.to_datetime(df['lastMaintenance'], errors='coerce')
+            
+        # Calculate days since last maintenance
+        df['daysSinceLastMaintenance'] = (datetime.now() - df['lastMaintenance']).dt.days
+        
+        # Assume maintenance is due every 30 days
+        df['maintenanceDue'] = 30 - df['daysSinceLastMaintenance']
+    elif 'maintenanceDue' not in df.columns:
+        # If no maintenance data at all, add dummy data
+        # For real apps, you might want to prompt the user instead
+        st.warning("No maintenance data found. Using dummy values for demonstration.")
+        df['lastMaintenance'] = pd.to_datetime(datetime.now() - timedelta(days=15))
+        df['maintenanceDue'] = 15  # 15 days until next maintenance
+    
+    return df
 
 if __name__ == "__main__":
     main()
