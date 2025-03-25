@@ -808,7 +808,7 @@ def calculate_slot_pass_rate(df):
     ).reset_index()
     
     # Add status for rise slot change needed
-    grouped['rise_change_needed'] = grouped['pass_rate'] < 80
+    grouped['rise_change_needed'] = grouped['pass_rate'] < 75
     
     # Reset index before returning to hide it from all uses of this data
     return grouped.reset_index(drop=True)
@@ -873,9 +873,9 @@ def display_dashboard(df):
         stations = df['stationName'].nunique()
         slots = df['slot'].nunique()
         
-        # Calculate how many stations have slots with pass rates below 80%
+        # Calculate how many stations have slots with pass rates below 75%
         pass_rates = calculate_slot_pass_rate(df)
-        low_pass_stations = pass_rates[pass_rates['pass_rate'] < 80]['stationName'].nunique()
+        low_pass_stations = pass_rates[pass_rates['pass_rate'] < 75]['stationName'].nunique()
         
         st.markdown(f"""
         <div class="card">
@@ -890,8 +890,21 @@ def display_dashboard(df):
         </div>
         """, unsafe_allow_html=True)
         
+        # Add new Card 4: Shelf Layout Map
+        st.markdown(f"""
+        <div class="card">
+            <div class="card-header">Shelf Layout Map</div>
+            <div>
+                <p>Assign stations to shelf positions for visual tracking</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         # Close the grid container
         st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Display Shelf Layout Map
+        display_shelf_layout_map(df)
         
         # Charts section
         st.subheader("Status Overview")
@@ -1282,7 +1295,7 @@ def display_maintenance(df):
     table_html = """
     <div class="card" style="padding: 0; overflow: hidden;">
         <div class="card-header" style="padding: 1rem 1.5rem;">Rise Component Changes Needed</div>
-        <div style="padding: 1rem 1.5rem;">Slots with pass rate below 80% need Rise component replacement.</div>
+        <div style="padding: 1rem 1.5rem;">Slots with pass rate below 75% need Rise component replacement.</div>
         <div style="width: 100%; overflow-x: auto; padding-bottom: 1rem;">
             <table style="width:100%; border-collapse: collapse; min-width: 100%;">
                 <thead>
@@ -1298,8 +1311,8 @@ def display_maintenance(df):
     
     # Generate all the table rows from the sorted pass_rates DataFrame
     for _, row in sorted_pass_rates.iterrows():
-        status_color = "#28a745" if row['pass_rate'] >= 80 else "#dc3545"  # Green if pass rate >= 80%, otherwise red  
-        status_text = "OK" if row['pass_rate'] >= 80 else "Change Needed"
+        status_color = "#28a745" if row['pass_rate'] >= 75 else "#dc3545"  # Green if pass rate >= 75%, otherwise red  
+        status_text = "OK" if row['pass_rate'] >= 75 else "Change Needed"
         
         table_html += f"""
     <tr style="border-bottom: 1px solid #eee;">
@@ -1661,6 +1674,205 @@ def calculate_maintenance_due(df):
         df['maintenanceDue'] = 15  # 15 days until next maintenance
     
     return df
+
+def load_shelf_layout():
+    """Load shelf layout configuration from Excel file"""
+    excel_path = get_maintenance_excel_path()
+    try:
+        if excel_path.exists():
+            # Load workbook to check if sheet exists
+            wb = openpyxl.load_workbook(excel_path)
+            if "ShelfLayout" in wb.sheetnames:
+                # Load the layout data
+                layout_df = pd.read_excel(excel_path, sheet_name="ShelfLayout")
+                # Convert to dictionary for easier access
+                layout = {}
+                for _, row in layout_df.iterrows():
+                    shelf = row.get('shelf')
+                    position = row.get('position')
+                    station = row.get('station')
+                    if pd.notna(shelf) and pd.notna(position):
+                        key = f"shelf_{int(shelf)}_position_{int(position)}"
+                        layout[key] = station if pd.notna(station) else None
+                return layout
+    except Exception as e:
+        st.warning(f"Error loading shelf layout: {e}")
+    
+    # Return default empty layout if loading fails
+    return create_default_shelf_layout()
+
+def create_default_shelf_layout():
+    """Create a default empty shelf layout configuration"""
+    layout = {}
+    for shelf in range(1, 5):  # 4 shelves
+        for position in range(1, 9):  # 8 positions each
+            key = f"shelf_{shelf}_position_{position}"
+            layout[key] = None
+    return layout
+
+def save_shelf_layout(layout):
+    """Save shelf layout configuration to Excel file"""
+    excel_path = get_maintenance_excel_path()
+    try:
+        # Convert layout dictionary to DataFrame
+        layout_data = []
+        for key, station in layout.items():
+            # Parse shelf and position from key
+            parts = key.split('_')
+            shelf = int(parts[1])
+            position = int(parts[3])
+            layout_data.append({
+                'shelf': shelf,
+                'position': position,
+                'station': station
+            })
+        layout_df = pd.DataFrame(layout_data)
+        
+        # Check if file exists
+        if excel_path.exists():
+            # Load existing workbook
+            with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                layout_df.to_excel(writer, sheet_name="ShelfLayout", index=False)
+        else:
+            # Create new workbook
+            layout_df.to_excel(excel_path, sheet_name="ShelfLayout", index=False)
+        return True
+    except Exception as e:
+        st.error(f"Error saving shelf layout: {e}")
+        return False
+
+def display_shelf_layout_map(df):
+    """Display a visual representation of shelves with station assignments"""
+    st.subheader("Shelf Layout Configuration")
+    
+    # Load current layout configuration
+    if 'shelf_layout' not in st.session_state:
+        st.session_state.shelf_layout = load_shelf_layout()
+    
+    # Get unique station names from data
+    available_stations = sorted([str(x) for x in df['stationName'].unique().tolist()])
+    
+    # Add option for "None" (no assignment)
+    station_options = ["None"] + available_stations
+    
+    # Use custom CSS for the shelf layout
+    st.markdown("""
+    <style>
+    .shelf-container {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 15px;
+        border: 2px solid #e9ecef;
+    }
+    .shelf-title {
+        font-weight: 600;
+        margin-bottom: 10px;
+        color: #495057;
+    }
+    .position-box {
+        background-color: white;
+        border: 1px solid #dee2e6;
+        border-radius: 6px;
+        padding: 10px;
+        min-height: 80px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        transition: all 0.2s;
+    }
+    .position-box:hover {
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .position-number {
+        font-size: 0.8rem;
+        color: #6c757d;
+    }
+    .station-assigned {
+        font-weight: 500;
+        color: #212529;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Save button
+    save_col1, save_col2 = st.columns([3, 1])
+    with save_col2:
+        if st.button("Save Layout"):
+            if save_shelf_layout(st.session_state.shelf_layout):
+                st.success("Shelf layout saved successfully!")
+            else:
+                st.error("Error saving shelf layout")
+    
+    # Create shelves (4 shelves total)
+    for shelf in range(1, 5):
+        st.markdown(f"""
+        <div class="shelf-container">
+            <div class="shelf-title">Shelf {shelf}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Create 8 positions per shelf using columns
+        cols = st.columns(8)
+        
+        for position in range(1, 9):
+            with cols[position-1]:
+                # Generate key for session state
+                position_key = f"shelf_{shelf}_position_{position}"
+                
+                # Get currently assigned station (if any)
+                current_station = st.session_state.shelf_layout.get(position_key)
+                
+                # Set default selection
+                default_ix = 0
+                if current_station in available_stations:
+                    default_ix = station_options.index(current_station)
+                
+                # Show position number
+                st.markdown(f"<div class='position-number'>Position {position}</div>", unsafe_allow_html=True)
+                
+                # Dropdown to select station for this position
+                selected_station = st.selectbox(
+                    f"",  # No label needed
+                    options=station_options,
+                    index=default_ix,
+                    key=position_key
+                )
+                
+                # Update session state when selection changes
+                if selected_station == "None":
+                    st.session_state.shelf_layout[position_key] = None
+                else:
+                    st.session_state.shelf_layout[position_key] = selected_station
+                
+                # Display assigned station
+                if selected_station != "None":
+                    # Check if this station has maintenance issues
+                    station_status = "OK"
+                    if 'maintenanceDue' in df.columns:
+                        station_data = df[df['stationName'] == selected_station]
+                        if not station_data.empty:
+                            min_due = station_data['maintenanceDue'].min()
+                            if min_due < 0:
+                                station_status = "Overdue"
+                            elif min_due <= 7:
+                                station_status = "Due Soon"
+                    
+                    # Show status indicator based on maintenance status
+                    status_color = {
+                        "Overdue": "#dc3545",  # Red
+                        "Due Soon": "#ffc107",  # Yellow
+                        "OK": "#28a745"  # Green
+                    }.get(station_status, "#6c757d")  # Default gray
+                    
+                    st.markdown(f"""
+                    <div style="margin-top:5px; color:{status_color};">
+                        <span style="font-weight:bold;">●</span> {station_status}
+                    </div>
+                    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
