@@ -1263,7 +1263,7 @@ def display_maintenance(df):
                 if success:
                     st.success(f"Maintenance record updated for {selected_update_station} - {selected_update_slot}")
                     # Rerun to show the updated data
-                    st.experimental_rerun()
+                    st.rerun()
 
     # Display maintenance history in a collapsible section
     with st.expander("Maintenance History", expanded=False):
@@ -1485,7 +1485,7 @@ def display_maintenance(df):
                         st.success("Maintenance scheduled successfully!")
                         st.session_state[f"show_schedule_{idx}"] = False
                         # Rerun to show the updated data
-                        st.experimental_rerun()
+                        st.rerun()
         
         # Show record completed maintenance form if button was clicked
         if st.session_state.get(f"show_record_{idx}", False):
@@ -1507,7 +1507,7 @@ def display_maintenance(df):
                         st.success("Maintenance recorded successfully!")
                         st.session_state[f"show_record_{idx}"] = False
                         # Rerun to show the updated data
-                        st.experimental_rerun()
+                        st.rerun()
 
 def display_test_results(df):
     """Display test results data"""
@@ -1649,7 +1649,6 @@ def display_test_results(df):
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Add this new function to calculate maintenance due dates
 def calculate_maintenance_due(df):
     """Calculate maintenance due dates if they don't exist"""
     # Make a copy to avoid warnings
@@ -1741,6 +1740,50 @@ def save_shelf_layout(layout):
         st.error(f"Error saving shelf layout: {e}")
         return False
 
+def calculate_station_ok_status(df):
+    """
+    Calculate if stations are OK based on whether they have any slots with pass rates < 75% 
+    in the last week of data. Uses testDate (column 9) for filtering.
+    
+    Returns a dictionary with stationName -> status
+    """
+    # Create a copy to avoid modifying the original
+    filtered_df = df.copy()
+    
+    # Ensure we have a datetime column for filtering
+    if 'testDate' in filtered_df.columns and not pd.api.types.is_datetime64_any_dtype(filtered_df['testDate']):
+        filtered_df['testDate'] = pd.to_datetime(filtered_df['testDate'], errors='coerce')
+    
+    # Filter only data from the last week
+    if 'testDate' in filtered_df.columns:
+        last_date = filtered_df['testDate'].max()
+        if pd.notna(last_date):
+            one_week_ago = last_date - timedelta(days=7)
+            filtered_df = filtered_df[filtered_df['testDate'] >= one_week_ago]
+    
+    # Calculate pass rate for each station-slot combination
+    slot_pass_rates = filtered_df.groupby(['stationName', 'slot']).apply(
+        lambda x: pd.Series({
+            'pass_rate': round((sum(x['result'].str.contains('PASSED', case=False, na=False)) / len(x)) * 100) if len(x) > 0 else 0
+        }),
+        include_groups=False
+    ).reset_index()
+    
+    # Find stations with any slots below 75% pass rate
+    problem_stations = slot_pass_rates[slot_pass_rates['pass_rate'] < 75]['stationName'].unique()
+    
+    # Create status dictionary for all stations
+    all_stations = filtered_df['stationName'].unique()
+    station_status = {}
+    
+    for station in all_stations:
+        if station in problem_stations:
+            station_status[station] = "Problem"
+        else:
+            station_status[station] = "OK"
+    
+    return station_status
+
 def display_shelf_layout_map(df):
     """Display a visual representation of shelves with station assignments"""
     st.subheader("Shelf Layout Configuration")
@@ -1748,6 +1791,13 @@ def display_shelf_layout_map(df):
     # Load current layout configuration
     if 'shelf_layout' not in st.session_state:
         st.session_state.shelf_layout = load_shelf_layout()
+        
+    # Initialize edit mode if not in session state (default to False)
+    if 'edit_layout_mode' not in st.session_state:
+        st.session_state.edit_layout_mode = False
+    
+    # Calculate station status based on slot pass rates in the last week
+    station_status_dict = calculate_station_ok_status(df)
     
     # Get unique station names from data
     available_stations = sorted([str(x) for x in df['stationName'].unique().tolist()])
@@ -1795,17 +1845,49 @@ def display_shelf_layout_map(df):
         font-weight: 500;
         color: #212529;
     }
+    .station-readonly {
+        padding: 8px 12px;
+        background-color: #f9f9f9;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        text-align: center;
+        margin: 5px 0;
+        font-weight: 500;
+    }
+    .edit-mode-indicator {
+        background-color: #e7f3ff;
+        color: #0d6efd;
+        padding: 5px 10px;
+        border-radius: 4px;
+        display: inline-block;
+        font-size: 0.8rem;
+        margin-right: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
     
-    # Save button
-    save_col1, save_col2 = st.columns([3, 1])
+    # Edit/Save buttons
+    save_col1, save_col2, save_col3 = st.columns([2, 1, 1])
+    
+    with save_col1:
+        if st.session_state.edit_layout_mode:
+            st.markdown('<div class="edit-mode-indicator">Edit Mode Active</div>', unsafe_allow_html=True)
+    
     with save_col2:
-        if st.button("Save Layout"):
-            if save_shelf_layout(st.session_state.shelf_layout):
-                st.success("Shelf layout saved successfully!")
-            else:
-                st.error("Error saving shelf layout")
+        # Toggle edit mode button
+        button_label = "Exit Edit Mode" if st.session_state.edit_layout_mode else "Edit Layout"
+        if st.button(button_label):
+            st.session_state.edit_layout_mode = not st.session_state.edit_layout_mode
+            st.rerun()
+    
+    with save_col3:
+        # Save button - only show in edit mode
+        if st.session_state.edit_layout_mode:
+            if st.button("Save Layout"):
+                if save_shelf_layout(st.session_state.shelf_layout):
+                    st.success("Shelf layout saved successfully!")
+                else:
+                    st.error("Error saving shelf layout")
     
     # Create shelves (4 shelves total)
     for shelf in range(1, 5):
@@ -1826,47 +1908,65 @@ def display_shelf_layout_map(df):
                 # Get currently assigned station (if any)
                 current_station = st.session_state.shelf_layout.get(position_key)
                 
-                # Set default selection
-                default_ix = 0
-                if current_station in available_stations:
-                    default_ix = station_options.index(current_station)
-                
                 # Show position number
                 st.markdown(f"<div class='position-number'>Position {position}</div>", unsafe_allow_html=True)
                 
-                # Dropdown to select station for this position
-                selected_station = st.selectbox(
-                    f"",  # No label needed
-                    options=station_options,
-                    index=default_ix,
-                    key=position_key
-                )
+                # In edit mode: show dropdown selector
+                if st.session_state.edit_layout_mode:
+                    # Set default selection
+                    default_ix = 0
+                    if current_station in available_stations:
+                        default_ix = station_options.index(current_station)
+                    
+                    # Dropdown to select station for this position
+                    selected_station = st.selectbox(
+                        f"",  # No label needed
+                        options=station_options,
+                        index=default_ix,
+                        key=position_key
+                    )
+                    
+                    # Update session state when selection changes
+                    if selected_station == "None":
+                        st.session_state.shelf_layout[position_key] = None
+                    else:
+                        st.session_state.shelf_layout[position_key] = selected_station
                 
-                # Update session state when selection changes
-                if selected_station == "None":
-                    st.session_state.shelf_layout[position_key] = None
+                # In read-only mode: show static text
                 else:
-                    st.session_state.shelf_layout[position_key] = selected_station
+                    # Display station name or empty placeholder
+                    if current_station:
+                        st.markdown(f'<div class="station-readonly">{current_station}</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="station-readonly" style="color:#999">Empty</div>', unsafe_allow_html=True)
                 
-                # Display assigned station
-                if selected_station != "None":
-                    # Check if this station has maintenance issues
-                    station_status = "OK"
-                    if 'maintenanceDue' in df.columns:
-                        station_data = df[df['stationName'] == selected_station]
+                # Display status indicators (always visible in both modes)
+                if current_station and current_station != "None":
+                    # First check if this station has any slots below 75% pass rate in the last week
+                    custom_status = station_status_dict.get(current_station, "Unknown")
+                    
+                    # Then check maintenance status (only if custom status is OK)
+                    maintenance_status = "OK"
+                    if custom_status == "OK" and 'maintenanceDue' in df.columns:
+                        station_data = df[df['stationName'] == current_station]
                         if not station_data.empty:
                             min_due = station_data['maintenanceDue'].min()
                             if min_due < 0:
-                                station_status = "Overdue"
+                                maintenance_status = "Overdue"
                             elif min_due <= 7:
-                                station_status = "Due Soon"
+                                maintenance_status = "Due Soon"
                     
-                    # Show status indicator based on maintenance status
-                    status_color = {
-                        "Overdue": "#dc3545",  # Red
-                        "Due Soon": "#ffc107",  # Yellow
-                        "OK": "#28a745"  # Green
-                    }.get(station_status, "#6c757d")  # Default gray
+                    # Set overall status - prioritize pass rate issues over maintenance issues
+                    if custom_status == "Problem":
+                        station_status = "Low Pass Rate"
+                        status_color = "#9c27b0"  # Purple for performance issues
+                    else:
+                        station_status = maintenance_status
+                        status_color = {
+                            "Overdue": "#dc3545",  # Red
+                            "Due Soon": "#ffc107",  # Yellow
+                            "OK": "#28a745"  # Green
+                        }.get(maintenance_status, "#6c757d")  # Default gray
                     
                     st.markdown(f"""
                     <div style="margin-top:5px; color:{status_color};">
