@@ -520,6 +520,65 @@ if brand_config:
     """
     st.markdown(css, unsafe_allow_html=True)
 
+def apply_slot_filtering_rules(df):
+    """
+    Apply the rule: for stations with FEWER THAN 10 total slots, only consider slots 1-4
+    Returns filtered dataframe
+    """
+    if 'slot' not in df.columns or df.empty:
+        return df
+    
+    # Create a copy to avoid modifying the original
+    filtered_df = df.copy()
+    
+    # Extract numeric values from slot names if they're strings (e.g., "Slot 1" -> 1)
+    def extract_slot_number(slot_value):
+        # First, check for NaN values
+        import pandas as pd
+        if pd.isna(slot_value):
+            return None
+            
+        if isinstance(slot_value, str):
+            # Extract digits from string
+            import re
+            digits = re.findall(r'\d+', slot_value)
+            if digits:
+                return int(digits[0])
+        elif isinstance(slot_value, (int, float)):
+            # Make sure it's not NaN before converting to int
+            try:
+                return int(slot_value)
+            except (ValueError, OverflowError):
+                return None
+        return None
+    
+    # Create a temporary column with numeric slot values
+    filtered_df['slot_num'] = filtered_df['slot'].apply(extract_slot_number)
+    
+    # Count unique slots per station
+    slot_counts = filtered_df.groupby('stationName')['slot'].nunique()
+    
+    # Identify stations with fewer than 10 total slots
+    stations_with_few_slots = slot_counts[slot_counts < 10].index.tolist()
+    
+    # Create mask to keep:
+    # 1. All rows from stations NOT in stations_with_few_slots
+    # 2. Only rows with slots 1-4 from stations IN stations_with_few_slots
+    valid_slots_mask = filtered_df['slot_num'].isin([1, 2, 3, 4])
+    
+    mask = (~filtered_df['stationName'].isin(stations_with_few_slots)) | \
+           (filtered_df['stationName'].isin(stations_with_few_slots) & valid_slots_mask)
+    
+    # Apply the mask and drop the temporary column
+    result_df = filtered_df[mask].drop(columns=['slot_num'])
+    
+    # Log how many rows were filtered
+    removed_count = len(df) - len(result_df)
+    if removed_count > 0:
+        st.info(f"Applied slot filtering rule: {removed_count} rows removed. For stations with fewer than 10 total slots, only keeping slots 1-4.")
+    
+    return result_df
+
 # Main app function
 def main():
     # Custom header with logo if available
@@ -628,7 +687,7 @@ def main():
         if df is not None:
             st.success(f"Loaded data from uploaded file with {len(df)} records")
     elif use_sample:
-        df = load_sample_data()
+        df = load_sample_data().reset_index(drop=True)
         st.info("Loaded sample data")
     else:
         # Try to load default CSV
@@ -696,6 +755,9 @@ def main():
         # Ensure we have maintenance data
         df = calculate_maintenance_due(df)
         
+        # Apply the new slot filtering rule
+        df = apply_slot_filtering_rules(df)
+        
         # Apply date filter if enabled
         if not disable_date_filter and 'testDate' in df.columns:
             # Convert sidebar date inputs to datetime for filtering
@@ -748,7 +810,8 @@ def calculate_slot_pass_rate(df):
     # Add status for rise slot change needed
     grouped['rise_change_needed'] = grouped['pass_rate'] < 80
     
-    return grouped
+    # Reset index before returning to hide it from all uses of this data
+    return grouped.reset_index(drop=True)
 
 def display_dashboard(df):
     """Display the main dashboard with key metrics and status"""
@@ -809,6 +872,11 @@ def display_dashboard(df):
         # Card 3: Stations Overview
         stations = df['stationName'].nunique()
         slots = df['slot'].nunique()
+        
+        # Calculate how many stations have slots with pass rates below 80%
+        pass_rates = calculate_slot_pass_rate(df)
+        low_pass_stations = pass_rates[pass_rates['pass_rate'] < 80]['stationName'].nunique()
+        
         st.markdown(f"""
         <div class="card">
             <div class="card-header">Equipment Overview</div>
@@ -816,6 +884,8 @@ def display_dashboard(df):
                 <div style="font-size: 1.5rem;">{stations}</div>
                 <div>Test Stations</div>
                 <hr style="margin: 1rem 0;">
+                <div style="font-size: 1.2rem; color: #dc3545;">{low_pass_stations}</div>
+                <div>Stations with Low Pass Rate Slots</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -875,23 +945,6 @@ def display_dashboard(df):
         pass_rates = calculate_slot_pass_rate(df)
         rise_changes_needed = sum(pass_rates['rise_change_needed'])
         
-        if rise_changes_needed > 0:
-            st.markdown(f"""
-            <div class="card" style="border-left: 5px solid #dc3545; margin-bottom: 1.5rem;">
-                <div style="display: flex; align-items: center;">
-                    <div style="font-size: 2rem; margin-right: 1rem;">⚠️</div>
-                    <div>
-                        <h3 style="margin: 0;">Rise Component Alert</h3>
-                        <p style="margin: 0.5rem 0 0 0;">
-                            {rise_changes_needed} slot(s) have pass rates below 80% and need Rise component replacement.
-                            <a href="#" onclick="document.querySelector('[data-testid=\\'stTabs\\'] [data-baseweb=\\'tab\\']').click(); 
-                            return false;" style="color: #0366d6; text-decoration: none;">View Maintenance Tab</a>
-                        </p>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
     except Exception as e:
         st.error(f"Error displaying dashboard: {e}")
 
@@ -1159,8 +1212,8 @@ def display_maintenance(df):
         if 'Recorded Maintenance' in manager_df.columns:
             display_df['Recorded Maintenance'] = manager_df['Recorded Maintenance']
         
-        # Display the table with update buttons
-        st.dataframe(display_df, use_container_width=True)
+        # Display the table with update buttons - hide index completely
+        st.dataframe(display_df.reset_index(drop=True), use_container_width=True, hide_index=True)
         
         # Add a form to update maintenance dates
         with st.form("update_maintenance_form"):
@@ -1213,7 +1266,8 @@ def display_maintenance(df):
             if 'timestamp' in history_display.columns:
                 history_display['timestamp'] = history_display['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
                 
-            st.dataframe(history_display, use_container_width=True)
+            # Hide the index when displaying the dataframe
+            st.dataframe(history_display.reset_index(drop=True), use_container_width=True, hide_index=True)
         else:
             st.info("No maintenance history records found")
     
@@ -1221,8 +1275,8 @@ def display_maintenance(df):
     pass_rates = calculate_slot_pass_rate(df)
     st.subheader("Rise Component Status")
 
-    # Sort the pass_rates DataFrame for better readability
-    sorted_pass_rates = pass_rates.sort_values(['stationName', 'slot'])
+    # Sort the pass_rates DataFrame by pass rate (ascending) to show lowest rates first
+    sorted_pass_rates = pass_rates.sort_values('pass_rate')
     
     # Create a complete HTML container for the table
     table_html = """
@@ -1274,9 +1328,11 @@ def display_maintenance(df):
     st.subheader("Maintenance Detail View")
     col1, col2, col3 = st.columns(3)
     with col1:
+        # Convert to list to remove any DataFrame index
+        status_options = ['Overdue', 'Due Soon', 'OK']
         status_filter = st.multiselect(
             "Maintenance Status:",
-            options=['Overdue', 'Due Soon', 'OK'],
+            options=status_options,
             default=['Overdue', 'Due Soon']
         )
     
@@ -1520,7 +1576,7 @@ def display_test_results(df):
     # Filter options - updated to remove slot filter
     col1, col2 = st.columns(2)
     
-    # Station filter
+    # Station filter - reset_index on the Series before converting to list
     with col1:
         station_options = ["All Stations"] + sorted([str(x) for x in df['stationName'].unique().tolist()])
         selected_station = st.selectbox("Filter by Station:", station_options)
@@ -1557,14 +1613,14 @@ def display_test_results(df):
             })
         ).reset_index()
         
-        # Display a summary table of all slots
-        st.dataframe(slot_summary, use_container_width=True)
+        # Display a summary table of all slots - completely hide the index
+        st.dataframe(slot_summary.reset_index(drop=True), use_container_width=True, hide_index=True)
         
         st.subheader("All Test Results")
         
-        # Fix the styling approach to work with any number of columns
-        # Use applymap which applies to specific cells rather than entire rows
-        styled_df = filtered_df.style.applymap(
+        # Reset index and apply styling
+        filtered_df_reset = filtered_df.reset_index(drop=True)
+        styled_df = filtered_df_reset.style.applymap(
             lambda x: f"background-color: {brand_config.get('colors', {}).get('secondary', 'green')}30" 
                 if isinstance(x, str) and 'PASSED' in x 
                 else f"background-color: {brand_config.get('colors', {}).get('danger', 'red')}30" 
@@ -1573,7 +1629,8 @@ def display_test_results(df):
             subset=['result']  # Only apply to the 'result' column
         )
         
-        st.dataframe(styled_df, use_container_width=True)
+        # Display styled dataframe with hidden index
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
         st.warning("No data available with current filters")
     
