@@ -1112,6 +1112,9 @@ def display_maintenance(df):
     # Map maintenance_control table columns to expected columns if they don't exist
     maintenance_df = df.copy()
     
+    # Debug output to check what columns are available
+    print(f"Available columns: {maintenance_df.columns.tolist()}")
+    
     # Check if maintenance data columns exist, try to map from actual table columns if not
     if 'lastMaintenance' not in maintenance_df.columns and 'maintenanceDate' in maintenance_df.columns:
         maintenance_df['lastMaintenance'] = maintenance_df['maintenanceDate']
@@ -1166,6 +1169,7 @@ def display_maintenance(df):
         if 'maintenanceStatus' in maintenance_df.columns:
             maintenance_df['status'] = maintenance_df['maintenanceStatus']
         else:
+            # Calculate status based on maintenanceDue
             maintenance_df['status'] = 'OK'
             maintenance_df.loc[maintenance_df['maintenanceDue'] <= 7, 'status'] = 'Due Soon'
             maintenance_df.loc[maintenance_df['maintenanceDue'] < 0, 'status'] = 'Overdue'
@@ -1182,12 +1186,14 @@ def display_maintenance(df):
     
     maintenance_df = maintenance_df.drop_duplicates(subset=['stationName', 'slot'])
     
-    # Check for optional maintenance columns
-    optional_columns = ['maintenanceStatus', 'scheduledMaintenance']
+    # Check for optional maintenance columns but don't exit if missing
+    optional_columns = ['maintenanceStatus', 'scheduledMaintenance', 'maintenanceNotes']
     missing_columns = [col for col in optional_columns if col not in maintenance_df.columns]
     
     if missing_columns:
-        st.warning(f"Some optional maintenance data might not be available: {', '.join(missing_columns)}")
+        st.info(f"Some optional maintenance data might not be available: {', '.join(missing_columns)}")
+    else:
+        st.success("All maintenance data features are available!")
     
     stations_slots = maintenance_df[['stationName', 'slot']]
     
@@ -1215,6 +1221,9 @@ def display_maintenance(df):
         if 'status' in maintenance_df.columns:
             merge_columns.append('status')
             display_columns.append('status')
+            
+        if 'maintenanceNotes' in maintenance_df.columns:
+            merge_columns.append('maintenanceNotes')
         
         manager_df = manager_df.merge(
             maintenance_df[merge_columns],
@@ -1272,6 +1281,186 @@ def display_maintenance(df):
         display_df = manager_df[['Station', 'Slot', 'Last Maintenance', 'Days Until Due', 'Status']].copy()
         
         st.dataframe(display_df.reset_index(drop=True), use_container_width=True, hide_index=True)
+    
+    st.subheader("Maintenance Status by Station")
+    
+    try:
+        # DEBUG: Print maintenance status distribution
+        status_counts = maintenance_df['status'].value_counts().to_dict() if 'status' in maintenance_df.columns else {}
+        st.write(f"Number of rows with status values: {status_counts}")
+        
+        # Create a basic table even if we don't have complete status data
+        stations_df = maintenance_df[['stationName']].drop_duplicates()
+        
+        if not stations_df.empty:
+            # Create a display dataframe for stations
+            summary_df = pd.DataFrame()
+            summary_df['Rig Name'] = stations_df['stationName']
+            
+            # Add status columns with defaults
+            for status in ['Overdue', 'Due Soon', 'OK']:
+                summary_df[status] = 0
+                
+            # If we have status data, use it to populate the summary
+            if 'status' in maintenance_df.columns and not maintenance_df['status'].isna().all():
+                # Group by station and status to count occurrences
+                try:
+                    status_counts = maintenance_df.groupby(['stationName', 'status']).size().reset_index(name='count')
+                    
+                    # Update the summary dataframe with actual counts
+                    for _, row in status_counts.iterrows():
+                        station = row['stationName']
+                        status = row['status']
+                        if status in ['Overdue', 'Due Soon', 'OK']:
+                            mask = summary_df['Rig Name'] == station
+                            summary_df.loc[mask, status] = row['count']
+                except Exception as e:
+                    st.warning(f"Could not summarize status counts: {e}")
+            else:
+                # If no status data is available, we'll still show the station list
+                st.info("Status values are not available. Showing station list with empty status counts.")
+                
+            # Display the summary table
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            
+            # Try to create a chart if there's at least some status data
+            if 'status' in maintenance_df.columns and not maintenance_df['status'].isna().all():
+                try:
+                    # Prepare data for plotting
+                    plot_data = []
+                    for _, row in summary_df.iterrows():
+                        station = row['Rig Name']
+                        for status in ['Overdue', 'Due Soon', 'OK']:
+                            count = row[status]
+                            if count > 0:
+                                plot_data.append({'Rig Name': station, 'status': status, 'count': count})
+                    
+                    if plot_data:
+                        plot_df = pd.DataFrame(plot_data)
+                        
+                        fig = px.bar(
+                            plot_df, 
+                            x='Rig Name',
+                            y='count',
+                            color='status',
+                            title='Maintenance Status by Station',
+                            color_discrete_map={
+                                'OK': '#28a745',
+                                'Due Soon': '#ffc107',
+                                'Overdue': '#dc3545'
+                            },
+                            labels={'Rig Name': 'Rig Name', 'count': 'Number of Slots', 'status': 'Status'}
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No status data available for charting.")
+                except Exception as e:
+                    st.warning(f"Could not create status chart: {e}")
+        else:
+            st.info("No station data available to display.")
+            
+    except Exception as e:
+        st.error(f"Error displaying maintenance status: {e}")
+    
+    # Continue with filter section
+    st.subheader("Filter Maintenance Items")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        status_options = ['Overdue', 'Due Soon', 'OK']
+        selected_status = st.multiselect(
+            "Filter by Status", 
+            options=status_options,
+            default=['Overdue', 'Due Soon']
+        )
+    
+    with col2:
+        sort_by = st.selectbox(
+            "Sort by",
+            options=["Due Date (ascending)", "Due Date (descending)", "Station Name"]
+        )
+    
+    if selected_status:
+        filtered_df = maintenance_df[maintenance_df['status'].isin(selected_status)]
+    else:
+        filtered_df = maintenance_df
+    
+    if sort_by == "Due Date (ascending)":
+        filtered_df = filtered_df.sort_values(by='maintenanceDue')
+    elif sort_by == "Due Date (descending)":
+        filtered_df = filtered_df.sort_values(by='maintenanceDue', ascending=False)
+    else:
+        filtered_df = filtered_df.sort_values(by=['stationName', 'slot'])
+    
+    if not filtered_df.empty:
+        st.subheader(f"Maintenance Items ({len(filtered_df)} items)")
+        
+        for _, row in filtered_df.iterrows():
+            status_color = {
+                'Overdue': '#dc3545',
+                'Due Soon': '#ffc107',
+                'OK': '#28a745'
+            }.get(row.get('status', 'Unknown'), '#6c757d')
+            
+            # Format the date display safely
+            last_maint_display = "Unknown"
+            if 'lastMaintenance' in row and pd.notna(row['lastMaintenance']):
+                try:
+                    last_maint_display = row['lastMaintenance'].strftime('%Y-%m-%d')
+                except:
+                    pass
+            elif 'maintenanceDate' in row and pd.notna(row['maintenanceDate']):
+                try:
+                    last_maint_display = row['maintenanceDate'].strftime('%Y-%m-%d')
+                except:
+                    pass
+                    
+            # Format days until due safely
+            days_due_display = "Unknown"
+            if 'maintenanceDue' in row and pd.notna(row['maintenanceDue']):
+                try:
+                    days_due_display = int(row['maintenanceDue'])
+                except:
+                    pass
+                    
+            # Format scheduled date if available
+            scheduled_display = "Not scheduled"
+            if 'scheduledDate' in row and pd.notna(row['scheduledDate']):
+                try:
+                    scheduled_display = row['scheduledDate'].strftime('%Y-%m-%d')
+                except:
+                    pass
+                    
+            # Format notes if available
+            notes_display = ""
+            if 'maintenanceNotes' in row and pd.notna(row['maintenanceNotes']):
+                notes_display = f"""
+                <div style="margin-top: 8px; padding: 8px; background-color: #f8f9fa; border-radius: 4px;">
+                    <strong>Notes:</strong> {row['maintenanceNotes']}
+                </div>
+                """
+            
+            st.markdown(f"""
+            <div style="background-color: white; border-left: 5px solid {status_color}; 
+                 border-radius: 5px; padding: 15px; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0;">{row['stationName']} - {row['slot']}</h3>
+                    <span style="background-color: {status_color}; color: white; padding: 5px 10px; border-radius: 20px;">
+                        {row.get('status', 'Unknown')}
+                    </span>
+                </div>
+                <div style="margin-top: 10px;">
+                    <p><strong>Last Maintenance:</strong> {last_maint_display}</p>
+                    <p><strong>Days Until Due:</strong> {days_due_display}</p>
+                    <p><strong>Scheduled Date:</strong> {scheduled_display}</p>
+                    {notes_display}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("No maintenance items match your filters")
 
 def display_test_results(df):
     """Display test results data"""

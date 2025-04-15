@@ -8,7 +8,7 @@
     "database": "annadb"
   },
   "query": {
-    "main_query": "SELECT r.*, m.maintenanceDate, m.scheduledDate, m.status FROM rig_logs r LEFT JOIN maintenance_control m ON r.rig_name = m.stationName AND r.slot_number = m.slot",
+    "main_query": "SELECT r.*, m.maintenanceDate, m.scheduledDate, m.status, m.notes FROM rig_logs r LEFT JOIN maintenance_control m ON r.rig_name = m.stationName AND r.slot_number = m.slot",
     "custom_query_enabled": false
   },
   "column_mapping": {
@@ -20,6 +20,9 @@
     "maintenanceDue": "days_until_maintenance",
     "maintenanceDate": "maintenanceDate",
     "scheduledDate": "scheduledDate",
+    "maintenanceStatus": "status",
+    "scheduledMaintenance": "scheduledDate",
+    "maintenanceNotes": "notes",
     "status": "status"
   }
 }
