@@ -1,0 +1,17 @@
+# Python dependencies for Test Station Maintenance Control application
+
+# Core dependencies
+streamlit>=1.37.0
+pandas>=1.5.3
+
+# Visualization libraries
+plotly>=5.13.0
+matplotlib>=3.7.1
+
+# Data handling
+openpyxl>=3.1.1
+
+# Database connectors
+mysql-connector-python>=8.4.0
+sqlalchemy>=2.0.5
+psycopg2-binary>=2.9.5  # Added for PostgreSQL support

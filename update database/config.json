@@ -1,0 +1,15 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "BootMe!",
+    "database": "annadb"
+  },
+  "import": {
+    "csv_file": "combined_results.csv",
+    "table_name": "rig_logs",
+    "headers": ["log_time", "company", "serial_number", "card_model", "rig_serial", "rig_name","log_result","slot_number","log_upload_time"],
+    "has_header_row": false
+  }
+}

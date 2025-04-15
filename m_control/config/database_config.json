@@ -1,0 +1,25 @@
+{
+  "connection": {
+    "type": "mysql",
+    "host": "annadb",
+    "port": 3306,
+    "user": "annauser",
+    "password": "BootMe!",
+    "database": "annadb"
+  },
+  "query": {
+    "main_query": "SELECT r.*, m.maintenanceDate, m.scheduledDate, m.status FROM rig_logs r LEFT JOIN maintenance_control m ON r.rig_name = m.stationName AND r.slot_number = m.slot",
+    "custom_query_enabled": false
+  },
+  "column_mapping": {
+    "stationName": "rig_name",
+    "result": "log_result",
+    "slot": "slot_number",
+    "testDate": "log_upload_time",
+    "lastMaintenance": "last_maintenance_date",
+    "maintenanceDue": "days_until_maintenance",
+    "maintenanceDate": "maintenanceDate",
+    "scheduledDate": "scheduledDate",
+    "status": "status"
+  }
+}

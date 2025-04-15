@@ -1,0 +1,26 @@
+services:
+  mysql:
+    image: mysql:latest
+    container_name: annadb
+    environment:
+      MYSQL_ROOT_PASSWORD: BootMe!
+      MYSQL_DATABASE: annadb
+      MYSQL_USER: annauser
+      MYSQL_PASSWORD: BootMe!
+      MYSQL_ROOT_HOST: '%'
+    volumes:
+      - annadb:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - anna-network
+
+volumes:
+  annadb:
+
+networks:
+  anna-network:
+    name: anna-network
+
+
