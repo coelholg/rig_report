@@ -1288,99 +1288,78 @@ def display_maintenance(df):
         # Get pass rate information by station and slot
         pass_rates_by_slot = calculate_slot_pass_rate(df)
         
-        # DEBUG: Print maintenance status distribution
-        status_counts = maintenance_df['status'].value_counts().to_dict() if 'status' in maintenance_df.columns else {}
-        st.write(f"Number of rows with status values: {status_counts}")
-        
-        # Create a basic table even if we don't have complete status data
+        # Create a basic table for station information
         stations_df = maintenance_df[['stationName']].drop_duplicates()
         
         if not stations_df.empty:
-            # Create a display dataframe that combines maintenance status and pass rates
+            # Create a display dataframe that shows pass rates by slot in order
             combined_df = pd.DataFrame()
             
             # Start with unique stations
             combined_df['Rig Name'] = stations_df['stationName']
             
-            # Merge with pass rates information
+            # Get all unique slot values and sort them numerically
+            all_slots = sorted(pass_rates_by_slot['slot'].unique(), 
+                             key=lambda x: int(''.join(filter(str.isdigit, str(x)))) if any(c.isdigit() for c in str(x)) else 0)
+            
+            # Create empty columns for all slots from 1 to 10 to ensure proper order
+            for i in range(1, 11):
+                col_name = f"Slot {i} Pass Rate"
+                combined_df[col_name] = None
+                
+            # Now populate with actual data
             for _, row in pass_rates_by_slot.iterrows():
                 station = row['stationName']
                 slot = row['slot']
                 pass_rate = row['pass_rate']
                 
-                # Create column name for this slot's pass rate
-                col_name = f"Slot {slot} Pass Rate"
+                # Try to extract the slot number
+                slot_num = None
+                if isinstance(slot, str) and any(c.isdigit() for c in slot):
+                    slot_num = int(''.join(filter(str.isdigit, slot)))
+                elif isinstance(slot, (int, float)):
+                    slot_num = int(slot)
                 
-                # If the column doesn't exist yet, create it with default values
-                if col_name not in combined_df.columns:
-                    combined_df[col_name] = None
-                
-                # Update the value for this station
-                mask = combined_df['Rig Name'] == station
-                combined_df.loc[mask, col_name] = f"{pass_rate}%"
-            
-            # Add maintenance status columns if available
-            if 'status' in maintenance_df.columns:
-                for _, row in maintenance_df.iterrows():
-                    station = row['stationName']
-                    slot = row['slot']
-                    status = row['status'] if 'status' in row and pd.notna(row['status']) else 'Unknown'
-                    
-                    # Create column name for this slot's status
-                    status_col_name = f"Slot {slot} Status"
-                    
-                    # If the column doesn't exist yet, create it with default values
-                    if status_col_name not in combined_df.columns:
-                        combined_df[status_col_name] = None
+                if slot_num is not None and 1 <= slot_num <= 10:
+                    # Create column name for this slot's pass rate
+                    col_name = f"Slot {slot_num} Pass Rate"
                     
                     # Update the value for this station
                     mask = combined_df['Rig Name'] == station
-                    combined_df.loc[mask, status_col_name] = status
+                    combined_df.loc[mask, col_name] = f"{pass_rate}%"
             
             # Display the combined table
             st.dataframe(combined_df, use_container_width=True, hide_index=True)
             
-            # Try to create a chart if there's at least some status data
-            if 'status' in maintenance_df.columns and not maintenance_df['status'].isna().all():
-                try:
-                    # Prepare data for plotting
-                    plot_data = []
-                    for _, row in combined_df.iterrows():
-                        station = row['Rig Name']
-                        status_columns = [col for col in combined_df.columns if 'Status' in col]
-                        for status_col in status_columns:
-                            if pd.notna(row[status_col]):
-                                status = row[status_col]
-                                if status in ['Overdue', 'Due Soon', 'OK']:
-                                    plot_data.append({
-                                        'Rig Name': station, 
-                                        'status': status, 
-                                        'slot': status_col.replace(' Status', ''),
-                                        'count': 1
-                                    })
+            # Create a chart just showing pass rates
+            try:
+                # Prepare data for plotting pass rates
+                plot_data = []
+                for _, row in pass_rates_by_slot.iterrows():
+                    plot_data.append({
+                        'Rig Name': row['stationName'],
+                        'Slot': row['slot'],
+                        'Pass Rate': row['pass_rate']
+                    })
+                
+                if plot_data:
+                    plot_df = pd.DataFrame(plot_data)
                     
-                    if plot_data:
-                        plot_df = pd.DataFrame(plot_data)
-                        
-                        fig = px.bar(
-                            plot_df, 
-                            x='Rig Name',
-                            y='count',
-                            color='status',
-                            title='Maintenance Status by Station',
-                            color_discrete_map={
-                                'OK': '#28a745',
-                                'Due Soon': '#ffc107',
-                                'Overdue': '#dc3545'
-                            },
-                            labels={'Rig Name': 'Rig Name', 'count': 'Number of Slots', 'status': 'Status'}
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("No status data available for charting.")
-                except Exception as e:
-                    st.warning(f"Could not create status chart: {e}")
+                    # Create a pass rate visualization
+                    fig = px.bar(
+                        plot_df,
+                        x='Rig Name',
+                        y='Pass Rate',
+                        color='Slot',
+                        title='Pass Rate by Station and Slot',
+                        labels={'Rig Name': 'Rig Name', 'Pass Rate': 'Pass Rate (%)'}
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No pass rate data available for charting.")
+            except Exception as e:
+                st.warning(f"Could not create pass rate chart: {e}")
         else:
             st.info("No station data available to display.")
             
