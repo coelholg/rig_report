@@ -1298,10 +1298,6 @@ def display_maintenance(df):
             # Start with unique stations
             combined_df['Rig Name'] = stations_df['stationName']
             
-            # Get all unique slot values and sort them numerically
-            all_slots = sorted(pass_rates_by_slot['slot'].unique(), 
-                             key=lambda x: int(''.join(filter(str.isdigit, str(x)))) if any(c.isdigit() for c in str(x)) else 0)
-            
             # Create empty columns for all slots from 1 to 10 to ensure proper order
             for i in range(1, 11):
                 col_name = f"Slot {i} Pass Rate"
@@ -1328,31 +1324,90 @@ def display_maintenance(df):
                     mask = combined_df['Rig Name'] == station
                     combined_df.loc[mask, col_name] = f"{pass_rate}%"
             
-            # Display the combined table
-            st.dataframe(combined_df, use_container_width=True, hide_index=True)
+            # Replace None values with empty strings for better display
+            combined_df = combined_df.fillna("")
             
-            # Create a chart just showing pass rates
+            # Define styling function with proper error handling
+            def highlight_low_pass_rate(val):
+                if pd.isna(val) or val == "":
+                    return ''
+                
+                try:
+                    if isinstance(val, str) and '%' in val:
+                        numeric_val = float(val.replace('%', ''))
+                        if numeric_val < 70:
+                            return 'background-color: #ffcccc; color: #cc0000; font-weight: bold'
+                except Exception:
+                    pass
+                return ''
+            
+            # Apply styling to the dataframe
+            styled_df = combined_df.style.applymap(highlight_low_pass_rate)
+            
+            # Display the styled dataframe
+            st.dataframe(
+                styled_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Create a chart showing pass rates with highlighting for low values
             try:
                 # Prepare data for plotting pass rates
                 plot_data = []
                 for _, row in pass_rates_by_slot.iterrows():
+                    station = row['stationName']
+                    slot = row['slot']
+                    pass_rate = row['pass_rate']
+                    
+                    # Add a status indicator for the chart
+                    needs_attention = pass_rate < 70
+                    status = "Needs Attention" if needs_attention else "OK"
+                    
                     plot_data.append({
-                        'Rig Name': row['stationName'],
-                        'Slot': row['slot'],
-                        'Pass Rate': row['pass_rate']
+                        'Rig Name': station,
+                        'Slot': slot,
+                        'Pass Rate': pass_rate,
+                        'Status': status
                     })
                 
                 if plot_data:
                     plot_df = pd.DataFrame(plot_data)
                     
-                    # Create a pass rate visualization
+                    # Create a pass rate visualization with color highlighting for low values
                     fig = px.bar(
                         plot_df,
                         x='Rig Name',
                         y='Pass Rate',
-                        color='Slot',
-                        title='Pass Rate by Station and Slot',
-                        labels={'Rig Name': 'Rig Name', 'Pass Rate': 'Pass Rate (%)'}
+                        color='Status',
+                        color_discrete_map={
+                            'OK': '#28a745',
+                            'Needs Attention': '#dc3545'
+                        },
+                        title='Pass Rate by Station and Slot (Below 70% Highlighted)',
+                        labels={'Rig Name': 'Rig Name', 'Pass Rate': 'Pass Rate (%)'},
+                        hover_data=['Slot']
+                    )
+                    
+                    # Add a horizontal line at 70% for reference
+                    fig.add_shape(
+                        type='line',
+                        x0=-0.5, 
+                        y0=70, 
+                        x1=len(plot_df['Rig Name'].unique()) - 0.5, 
+                        y1=70,
+                        line=dict(color='red', width=2, dash='dash'),
+                        name='70% Threshold'
+                    )
+                    
+                    # Add annotation for the threshold
+                    fig.add_annotation(
+                        x=0, 
+                        y=70, 
+                        text="70% Threshold",
+                        showarrow=False,
+                        yshift=10,
+                        font=dict(color="red")
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
