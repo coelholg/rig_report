@@ -1285,6 +1285,9 @@ def display_maintenance(df):
     st.subheader("Maintenance Status by Station")
     
     try:
+        # Get pass rate information by station and slot
+        pass_rates_by_slot = calculate_slot_pass_rate(df)
+        
         # DEBUG: Print maintenance status distribution
         status_counts = maintenance_df['status'].value_counts().to_dict() if 'status' in maintenance_df.columns else {}
         st.write(f"Number of rows with status values: {status_counts}")
@@ -1293,47 +1296,68 @@ def display_maintenance(df):
         stations_df = maintenance_df[['stationName']].drop_duplicates()
         
         if not stations_df.empty:
-            # Create a display dataframe for stations
-            summary_df = pd.DataFrame()
-            summary_df['Rig Name'] = stations_df['stationName']
+            # Create a display dataframe that combines maintenance status and pass rates
+            combined_df = pd.DataFrame()
             
-            # Add status columns with defaults
-            for status in ['Overdue', 'Due Soon', 'OK']:
-                summary_df[status] = 0
+            # Start with unique stations
+            combined_df['Rig Name'] = stations_df['stationName']
+            
+            # Merge with pass rates information
+            for _, row in pass_rates_by_slot.iterrows():
+                station = row['stationName']
+                slot = row['slot']
+                pass_rate = row['pass_rate']
                 
-            # If we have status data, use it to populate the summary
-            if 'status' in maintenance_df.columns and not maintenance_df['status'].isna().all():
-                # Group by station and status to count occurrences
-                try:
-                    status_counts = maintenance_df.groupby(['stationName', 'status']).size().reset_index(name='count')
+                # Create column name for this slot's pass rate
+                col_name = f"Slot {slot} Pass Rate"
+                
+                # If the column doesn't exist yet, create it with default values
+                if col_name not in combined_df.columns:
+                    combined_df[col_name] = None
+                
+                # Update the value for this station
+                mask = combined_df['Rig Name'] == station
+                combined_df.loc[mask, col_name] = f"{pass_rate}%"
+            
+            # Add maintenance status columns if available
+            if 'status' in maintenance_df.columns:
+                for _, row in maintenance_df.iterrows():
+                    station = row['stationName']
+                    slot = row['slot']
+                    status = row['status'] if 'status' in row and pd.notna(row['status']) else 'Unknown'
                     
-                    # Update the summary dataframe with actual counts
-                    for _, row in status_counts.iterrows():
-                        station = row['stationName']
-                        status = row['status']
-                        if status in ['Overdue', 'Due Soon', 'OK']:
-                            mask = summary_df['Rig Name'] == station
-                            summary_df.loc[mask, status] = row['count']
-                except Exception as e:
-                    st.warning(f"Could not summarize status counts: {e}")
-            else:
-                # If no status data is available, we'll still show the station list
-                st.info("Status values are not available. Showing station list with empty status counts.")
-                
-            # Display the summary table
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                    # Create column name for this slot's status
+                    status_col_name = f"Slot {slot} Status"
+                    
+                    # If the column doesn't exist yet, create it with default values
+                    if status_col_name not in combined_df.columns:
+                        combined_df[status_col_name] = None
+                    
+                    # Update the value for this station
+                    mask = combined_df['Rig Name'] == station
+                    combined_df.loc[mask, status_col_name] = status
+            
+            # Display the combined table
+            st.dataframe(combined_df, use_container_width=True, hide_index=True)
             
             # Try to create a chart if there's at least some status data
             if 'status' in maintenance_df.columns and not maintenance_df['status'].isna().all():
                 try:
                     # Prepare data for plotting
                     plot_data = []
-                    for _, row in summary_df.iterrows():
+                    for _, row in combined_df.iterrows():
                         station = row['Rig Name']
-                        for status in ['Overdue', 'Due Soon', 'OK']:
-                            count = row[status]
-                            if count > 0:
-                                plot_data.append({'Rig Name': station, 'status': status, 'count': count})
+                        status_columns = [col for col in combined_df.columns if 'Status' in col]
+                        for status_col in status_columns:
+                            if pd.notna(row[status_col]):
+                                status = row[status_col]
+                                if status in ['Overdue', 'Due Soon', 'OK']:
+                                    plot_data.append({
+                                        'Rig Name': station, 
+                                        'status': status, 
+                                        'slot': status_col.replace(' Status', ''),
+                                        'count': 1
+                                    })
                     
                     if plot_data:
                         plot_df = pd.DataFrame(plot_data)
